@@ -149,7 +149,7 @@ constexpr auto STATIC_TABLE = std::to_array<StaticSpec>({
 	switch (requirement) {
 	case Requirement::SysAdmin:
 	case Requirement::Perfmon: {
-		const auto cap = requirement == Requirement::SysAdmin ? Capability::SysAdmin : Capability::Perfmon;
+		const auto cap = requirement == Requirement::SysAdmin ? KernelCapability::SysAdmin : KernelCapability::Perfmon;
 		if (hasCapability(cap)) {
 			return std::nullopt;
 		}

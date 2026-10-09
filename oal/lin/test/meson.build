@@ -161,6 +161,19 @@ if get_option('with_tests')
 
   test('dynload_test', dynload_test)
 
+  # Privilege policy tests: credentials in, capabilities out, plus CapEff parsing.
+  # Compiles privilege.cpp directly so the test needs no OAL link.
+  privilege_test = executable(
+    'privilege_test',
+    ['privilege_test.cpp', '../privilege.cpp'],
+    include_directories: [global_inc, include_directories('..', '../..')],
+    dependencies: [doctest_dep],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('privilege_test', privilege_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')

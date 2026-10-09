@@ -8,6 +8,12 @@
 #include "privilege.h"
 #include "os.h"
 
-bool hasCapability(UNUSED Capability cap) noexcept { return true; }
+bool hasCapability(UNUSED KernelCapability cap) noexcept { return true; }
 
 bool canReadWrite(UNUSED const std::string &path) noexcept { return true; }
+
+Capability currentPrivileges()
+{
+	// Matches the historical PRIVILEGECHECK() == true on Windows.
+	return Capability::ALL;
+}

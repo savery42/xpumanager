@@ -19,6 +19,7 @@ if is_windows
     'win/privilege.cpp',
     'win/module_info.cpp',
     'win/path_lookup_win.cpp',
+    'win/privilege.cpp',
     'win/proc_fdinfo.cpp',
     'win/process_platform.cpp',
     'win/terminal.cpp',

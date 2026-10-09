@@ -9,6 +9,7 @@
 
 #include "device.h"
 #include "proc_fdinfo.h"
+#include "utility/bitmask_enum.h"
 #include "ze_api.h"
 #include <enginegroup.h>
 #include <cstddef>
@@ -26,7 +27,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <type_traits>
 #include <vector>
 
 namespace metrics {
@@ -35,12 +35,6 @@ namespace detail {
 
 /** Duration of the measurement window used by populateMetricCache() and runMetrics(). */
 inline constexpr auto SAMPLE_WINDOW = std::chrono::milliseconds{200};
-
-/** Generic underlying-type cast — equivalent to C++23 std::to_underlying. */
-template <typename Enum> [[nodiscard]] constexpr auto toUnderlying(Enum e) noexcept
-{
-	return static_cast<std::underlying_type_t<Enum>>(e);
-}
 
 /** Trim leading and trailing ASCII spaces and tabs from a string_view. */
 [[nodiscard]] constexpr std::string_view trim(std::string_view s) noexcept
@@ -53,32 +47,7 @@ template <typename Enum> [[nodiscard]] constexpr auto toUnderlying(Enum e) noexc
 	return s.substr(first, last - first + 1);
 }
 
-/** Opt-in trait: specialize to `true` to pick up the bitwise operators below for an enum. */
-template <typename Enum> inline constexpr bool IS_BITMASK_ENUM = false;
-
 } // namespace detail
-
-/**
- * Enum types that opt into @ref detail::IS_BITMASK_ENUM get `operator|`, `operator&`, and
- * `hasFlag` for free. Kept as an explicit opt-in (rather than a bare unconstrained template)
- * so unrelated enum classes such as @ref MetricSource never silently gain bitwise operators.
- */
-template <typename Enum>
-concept BitmaskEnum = detail::IS_BITMASK_ENUM<Enum>;
-
-template <BitmaskEnum Enum> [[nodiscard]] constexpr Enum operator|(Enum a, Enum b) noexcept
-{
-	// NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): BitmaskEnum types are bitmasks.
-	return static_cast<Enum>(detail::toUnderlying(a) | detail::toUnderlying(b));
-}
-template <BitmaskEnum Enum> [[nodiscard]] constexpr Enum operator&(Enum a, Enum b) noexcept
-{
-	return static_cast<Enum>(detail::toUnderlying(a) & detail::toUnderlying(b));
-}
-template <BitmaskEnum Enum> [[nodiscard]] constexpr bool hasFlag(Enum field, Enum mask) noexcept
-{
-	return (field & mask) != Enum::NONE;
-}
 
 // ── MetricGroup: display-section bitmask (-d style) ─────────────────────────────
 
@@ -102,11 +71,9 @@ enum class MetricGroup : uint32_t
 	ALL = ~0U,
 };
 
-namespace detail {
-template <> inline constexpr bool IS_BITMASK_ENUM<MetricGroup> = true;
-} // namespace detail
+consteval bool enableBitmaskOperators(MetricGroup) { return true; }
 
-[[nodiscard]] constexpr bool hasGroup(MetricGroup field, MetricGroup mask) noexcept { return hasFlag(field, mask); }
+[[nodiscard]] constexpr bool hasGroup(MetricGroup field, MetricGroup mask) noexcept { return hasAny(field, mask); }
 
 // ── MetricSource ───────────────────────────────────────────────────────────────
 
@@ -140,11 +107,9 @@ enum class MetricInput : uint32_t
 	ALL = ~0U,
 };
 
-namespace detail {
-template <> inline constexpr bool IS_BITMASK_ENUM<MetricInput> = true;
-} // namespace detail
+consteval bool enableBitmaskOperators(MetricInput) { return true; }
 
-[[nodiscard]] constexpr bool hasInput(MetricInput field, MetricInput mask) noexcept { return hasFlag(field, mask); }
+[[nodiscard]] constexpr bool hasInput(MetricInput field, MetricInput mask) noexcept { return hasAny(field, mask); }
 
 // ── MetricCache: one set of before/after delta samples per device per tick ────
 //

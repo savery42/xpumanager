@@ -5,6 +5,7 @@
  */
 
 #include <os.h>
+#include "privilege.h"
 #include "process_platform.h"
 #include <algorithm>
 #include <array>
@@ -19,9 +20,7 @@
 #include "utility/compat/format.h"
 #include <fstream>
 #include <functional>
-#include <grp.h>
 #include <iostream>
-#include <pwd.h>
 #include <spawn.h>
 #include <sys/utsname.h>
 #include <system_error>
@@ -227,50 +226,12 @@ void wait_for_thread(thread_id *tid)
 /**
  * @brief Checks if the current user has privilege to access XPUM resources
  *
- * This function verifies whether the current user has the necessary privileges
- * to access XPUM resources. It checks if the user is root or belongs to the
- * 'xpum' group, which grants the required permissions.
+ * Thin wrapper over currentPrivileges(); true for root or members of the
+ * 'xpum' group.
  *
  * @return bool True if user has privileges, false otherwise
  */
-bool privilegeCheck()
-{
-	uid_t uid = getuid();
-	if (uid == 0) {
-		return true;
-	}
-	struct passwd *pw = getpwuid(uid);
-	if (pw == NULL) {
-		ERR("getpwuid error\n");
-		return false;
-	}
-	int ngroups = 0;
-	getgrouplist(pw->pw_name, pw->pw_gid, NULL, &ngroups);
-	if (ngroups == 0) {
-		return false;
-	}
-	std::vector<gid_t> groups(ngroups);
-	int rc = getgrouplist(pw->pw_name, pw->pw_gid, groups.data(), &ngroups);
-	if (rc < 0) {
-		ERR("getgrouplist ngroups is too small\n");
-		return false;
-	}
-	std::string xpumGrp("xpum");
-	bool hasPrivilege = false;
-	for (int i = 0; i < ngroups; i++) {
-		struct group *gr = getgrgid(groups[i]);
-		if (gr == NULL) {
-			ERR("getgrgid error\n");
-			return false;
-		}
-		std::string grpName(gr->gr_name);
-		if (grpName == xpumGrp) {
-			hasPrivilege = true;
-		}
-	}
-
-	return hasPrivilege;
-}
+bool privilegeCheck() { return hasAll(currentPrivileges(), Capability::Admin); }
 
 /**
  * @brief Retrieves the process name for a given process ID
