@@ -11,6 +11,7 @@
 #include <device.h>
 #include <driver.h>
 #include <list>
+#include "requirements.h"
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -72,14 +73,6 @@ struct arg_struct
 	}
 	return std::span<char *const>{args.argv, static_cast<std::size_t>(args.argc)}.subspan(2);
 }
-
-/// How much of Level Zero must be initialized before a command runs.
-enum class DriverMode
-{
-	None,		// args->sm is never touched
-	SysmanOnly, // zesInit only; the compute runtime (zeInit) is never loaded
-	Full,		// zesInit and zeInit
-};
 
 class cmds
 {

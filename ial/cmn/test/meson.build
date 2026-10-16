@@ -108,6 +108,22 @@ version_report_test = executable(
 
 test('version_report_test', version_report_test)
 
+requirements_test = executable(
+  'requirements_test',
+  'requirements_test.cpp',
+  include_directories: [
+    global_inc,
+    ial_cmn_inc,
+  ],
+  link_with: ial_cmn_lib,
+  dependencies: ial_cmn_test_deps,
+  link_args: is_linux ? ['-pie'] : [],
+  build_by_default: true,
+  install: false,
+)
+
+test('requirements_test', requirements_test)
+
 if is_linux
   topology_test = executable(
     'topology_test',

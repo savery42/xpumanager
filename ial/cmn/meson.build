@@ -33,6 +33,7 @@ ial_cmn_sources = files(
   'metrics_registry.cpp',
   'oem_serial.cpp',
   'printer.cpp',
+  'requirements.cpp',
   'version_report.cpp',
   'metrics/eu_array.cpp',
   'metrics/fan.cpp',
