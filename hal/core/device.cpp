@@ -5,6 +5,7 @@
  */
 
 #include "device.h"
+#include <dynload.h>
 #include "firmware.h"
 #include "utility/compat/format.h"
 #include <cinttypes>
@@ -73,17 +74,16 @@ device::~device()
 ze_result_t device::getDevProps(ze_device_handle_t dev, ze_device_properties_t *zeDevProp)
 {
 	TRACING();
+	if (zeDevProp == nullptr) {
+		ERR("Invalid device properties pointer\n");
+		return ZE_RESULT_ERROR_INVALID_ARGUMENT;
+	}
 	if (dev == nullptr) {
 		if (isInSurvMode()) {
 			DBG("  - Device in survivability mode: {}\n", getBDFStr().c_str());
 			return ZE_RESULT_ERROR_SURVIVABILITY_MODE_DETECTED;
 		}
-		DBG(" - Device is not initialized\n");
-		return ZE_RESULT_ERROR_UNINITIALIZED;
-	}
-	if (zeDevProp == nullptr) {
-		ERR("Invalid device properties pointer\n");
-		return ZE_RESULT_ERROR_INVALID_ARGUMENT;
+		return getSysmanCoreProps(zeDevProp);
 	}
 
 	ze_result_t result = zeDeviceGetProperties(dev, zeDevProp);
@@ -142,6 +142,34 @@ ze_result_t device::getDevProps(ze_device_handle_t dev, ze_device_properties_t *
 	DBG("  - Name: {}\n", zeDevProp->name);
 
 	return result;
+}
+
+/**
+ * @brief Core device properties without the compute runtime.
+ *
+ * zes_device_properties_t embeds a ze_device_properties_t, so sysman answers
+ * for a device whose core handle is null because zeInit never ran. It leaves
+ * maxMemAllocSize and physicalEUSimdWidth at 0 and fills no pNext extension;
+ * the caller's stype and pNext are kept.
+ *
+ * @param[in,out] zeDevProp  Receives the properties.
+ *
+ * @retval ZE_RESULT_SUCCESS  Filled from sysman.
+ * @retval ZE_RESULT_ERROR_*  zesDeviceGetProperties failed.
+ */
+ze_result_t device::getSysmanCoreProps(ze_device_properties_t *zeDevProp)
+{
+	zes_device_properties_t zesProps{};
+	zesProps.stype = ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+	const ze_result_t result = zesGetDevProps(zesDevice, &zesProps);
+	if (result != ZE_RESULT_SUCCESS) {
+		return result;
+	}
+	void *const pNext = zeDevProp->pNext;
+	*zeDevProp = zesProps.core;
+	zeDevProp->stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+	zeDevProp->pNext = pNext;
+	return ZE_RESULT_SUCCESS;
 }
 
 /**
@@ -681,8 +709,9 @@ ze_result_t device::getDriverProperties(ze_driver_properties_t *driverProps)
  * that names no release.
  *
  * @param [out] version Receives the driver version string on success; untouched otherwise.
- * @retval ZE_RESULT_SUCCESS              Version string retrieved.
- * @retval ZE_RESULT_ERROR_UNINITIALIZED  No core Level Zero driver handle.
+ * @retval ZE_RESULT_SUCCESS              Version string retrieved; without zeInit, from the
+ *                                        file name of the driver library zesInit loaded.
+ * @retval ZE_RESULT_ERROR_UNINITIALIZED  No core driver handle, and no versioned library name.
  * @retval ZE_RESULT_ERROR_*              A Level Zero query failed.
  */
 ze_result_t device::getDriverVersionString(std::string &version)
@@ -690,6 +719,11 @@ ze_result_t device::getDriverVersionString(std::string &version)
 	TRACING();
 
 	if (zeDriver == nullptr) {
+		// Without zeInit the version comes from the driver library zesInit loaded.
+		if (auto loaded = loadedGpuDriverVersion()) {
+			version = std::move(*loaded);
+			return ZE_RESULT_SUCCESS;
+		}
 		DBG("No core Level Zero driver handle, driver version unavailable\n");
 		return ZE_RESULT_ERROR_UNINITIALIZED;
 	}

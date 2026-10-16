@@ -28,3 +28,7 @@ void *resolveL0Sym(const char *name) noexcept
 	static_assert(sizeof(FARPROC) == sizeof(void *), "function-pointer size must match data-pointer size");
 	return std::bit_cast<void *>(fp);
 }
+
+std::optional<std::string> loadedGpuDriverVersion() { return std::nullopt; }
+
+std::optional<std::string> driverVersionFromFileName(std::string_view /*fileName*/) { return std::nullopt; }

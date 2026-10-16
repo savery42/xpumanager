@@ -118,6 +118,7 @@ public:
 	void printExtMemTypeFlags(const char *flagName, ze_external_memory_type_flags_t flag);
 
 	ze_result_t getDevProps(ze_device_handle_t dev, ze_device_properties_t *zeDevProp);
+	ze_result_t getSysmanCoreProps(ze_device_properties_t *zeDevProp);
 	ze_result_t getComputeProps(ze_device_handle_t dev, ze_device_compute_properties_t *zeComputeProps);
 	ze_result_t getModuleProps(ze_device_handle_t dev, ze_device_module_properties_t *zeModuleProps);
 	ze_result_t getMemAccessProps(ze_device_handle_t dev, ze_device_memory_access_properties_t *zeMemAccessProps);

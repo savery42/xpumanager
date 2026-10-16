@@ -149,6 +149,18 @@ if get_option('with_tests')
 
   test('fs_lock_test', fs_lock_test)
 
+  # Driver library version parsing; compiles dynload.cpp directly.
+  dynload_test = executable(
+    'dynload_test',
+    ['dynload_test.cpp', '../dynload.cpp'],
+    include_directories: [global_inc, include_directories('../..')],
+    dependencies: [doctest_dep, cpp.find_library('dl', required: false)],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('dynload_test', dynload_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')
