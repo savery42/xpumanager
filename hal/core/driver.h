@@ -49,9 +49,11 @@ class LIBXPUM_API driver
 {
 private:
 	ze_result_t findOneToken(std::string_view token, std::vector<devInfo> *devList);
-	// Builds the device list from sysman handles only (no zeInit). Used by the
-	// config --reset path; see init(bool skipZeInit).
+	// Builds the device list from sysman handles only (no zeInit), with the same
+	// devices and indices as the full path; see init(bool skipZeInit).
 	ze_result_t smOnlyEnumerate();
+	// Keeps devices in survivability mode out of the device list.
+	void adoptSurvivabilityDevices(const std::vector<zes_device_handle_t> &survivors);
 	bool initialized;
 	uint32_t driverCount;
 	uint32_t totalZesDevicesCount;

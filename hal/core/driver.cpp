@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -46,6 +47,41 @@ namespace {
 	const zes_pci_address_t address{
 		.domain = field(0, 4), .bus = field(5, 2), .device = field(8, 2), .function = field(11, 1)};
 	return parsed ? std::optional{address} : std::nullopt;
+}
+
+} // namespace
+
+namespace {
+
+/// PCI address of a sysman device, ordered the way ZE_ENABLE_PCI_ID_DEVICE_ORDER orders core devices.
+struct PciOrder
+{
+	uint32_t domain = 0, bus = 0, device = 0, function = 0;
+	auto operator<=>(const PciOrder &) const = default;
+};
+
+[[nodiscard]] PciOrder pciOrderOf(zes_device_handle_t d)
+{
+	zes_pci_properties_t props{};
+	props.stype = ZES_STRUCTURE_TYPE_PCI_PROPERTIES;
+	if (zesDevicePciGetProperties(d, &props) != ZE_RESULT_SUCCESS) {
+		return {};
+	}
+	return {props.address.domain, props.address.bus, props.address.device, props.address.function};
+}
+
+/// "dddd:bb:dd.f", as device::getBDFStr() spells it.
+[[nodiscard]] std::string bdfOf(zes_device_handle_t d)
+{
+	const PciOrder a = pciOrderOf(d);
+	return xpum::compat::format("{:04x}:{:02x}:{:02x}.{:01x}", a.domain, a.bus, a.device, a.function);
+}
+
+/// Sysman refuses every per-device enumeration of a device in survivability mode with this code.
+[[nodiscard]] bool inSurvivabilityMode(zes_device_handle_t d)
+{
+	uint32_t count = 0;
+	return zesDeviceEnumMemoryModules(d, &count, nullptr) == ZE_RESULT_ERROR_SURVIVABILITY_MODE_DETECTED;
 }
 
 } // namespace
@@ -340,26 +376,14 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 		}
 	}
 
-	// Find zes devices which are in survivability mode.
-	if (devBdfs.size() < totalZesDevicesCount) {
-		svZesDevs.zesDriver = zesDrivers[0];
-		uint32_t survDevCount = static_cast<uint32_t>(totalZesDevicesCount - devBdfs.size());
-		svZesDevs.survDevices = new device[survDevCount];
-		svZesDevs.survDevCount = survDevCount;
-		uint32_t devIndex = 0;
-		for (uint32_t k = 0; k < totalZesDevicesCount; k++) {
-			zes_pci_properties_t pciProps{};
-			result = zesDevicePciGetProperties(totalZesDevices[k], &pciProps);
-			char bdfStr[BDF_STR_LEN];
-			snprintf(bdfStr, sizeof(bdfStr), "%04x:%02x:%02x.%01x", pciProps.address.domain, pciProps.address.bus,
-					 pciProps.address.device, pciProps.address.function);
-			if (!devBdfs.contains(bdfStr) && (devIndex < survDevCount)) {
-				svZesDevs.survDevices[devIndex].smDevInit(zesDrivers[0], totalZesDevices[k]);
-				svZesDevs.survDevices[devIndex].setSurvivabilityMode(true);
-				devIndex++;
-			}
+	// A sysman device the compute runtime did not enumerate is in survivability mode.
+	std::vector<zes_device_handle_t> survivors;
+	for (zes_device_handle_t d : std::span{totalZesDevices, totalZesDevicesCount}) {
+		if (!devBdfs.contains(bdfOf(d))) {
+			survivors.push_back(d);
 		}
 	}
+	adoptSurvivabilityDevices(survivors);
 
 	initialized = true;
 	return ZE_RESULT_SUCCESS;
@@ -368,11 +392,12 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 /**
  * @brief Enumerates devices using sysman handles only (no zeInit).
  *
- * Mirrors the device set that findDevice()/findOneToken() expect: a single
- * devGroup holding every sysman device, each initialised through smDevInit()
- * so its BDF, PCI, and VF instances are usable. Because the Level Zero compute
+ * Mirrors the device set and indices the full path produces: a single devGroup
+ * holding every healthy sysman device in PCI order, each initialised through
+ * smDevInit() so its BDF, PCI, and VF instances are usable, and survivability
+ * devices kept apart for findSurvDevice(). Because the Level Zero compute
  * runtime is never initialised, the ze* handles remain null and the device is
- * driven purely through sysman — which is all that resetDevice() needs.
+ * driven purely through sysman.
  *
  * zesInitialize() must have already populated totalZesDevices /
  * totalZesDevicesCount before this is called.
@@ -388,20 +413,33 @@ ze_result_t driver::smOnlyEnumerate()
 		return ZE_RESULT_ERROR_UNINITIALIZED;
 	}
 
-	// A single synthetic driver group holds all sysman devices. findOneToken()
-	// walks devs[0..driverCount) and indexes devices sequentially, which is the
-	// same ordering the compute-runtime path produces for a single driver.
-	driverCount = 1;
-	std::vector<devGroup> localDevs(driverCount);
-	localDevs[0].totalDevicesCount = totalZesDevicesCount;
-	localDevs[0].dev.resize(totalZesDevicesCount);
-	localDevs[0].zeDevices.assign(totalZesDevicesCount, nullptr);
+	// Match the device set and indices of the full path, which numbers only the
+	// devices the compute runtime enumerates, ordered by PCI address
+	// (ZE_ENABLE_PCI_ID_DEVICE_ORDER); sysman applies neither, so do both here.
+	std::vector<std::pair<PciOrder, zes_device_handle_t>> healthy;
+	std::vector<zes_device_handle_t> survivors;
+	for (zes_device_handle_t d : std::span{totalZesDevices, totalZesDevicesCount}) {
+		if (inSurvivabilityMode(d)) {
+			survivors.push_back(d);
+		} else {
+			healthy.emplace_back(pciOrderOf(d), d);
+		}
+	}
+	std::ranges::sort(healthy, {}, &std::pair<PciOrder, zes_device_handle_t>::first);
 
-	for (uint32_t j = 0; j < totalZesDevicesCount; j++) {
-		ze_result_t result = localDevs[0].dev[j].smDevInit(zesDrivers[0], totalZesDevices[j]);
+	// A single synthetic driver group holds every healthy sysman device;
+	// findOneToken() walks devs[0..driverCount) and indexes them sequentially.
+	driverCount = 1;
+	const auto count = static_cast<uint32_t>(healthy.size());
+	std::vector<devGroup> localDevs(driverCount);
+	localDevs[0].totalDevicesCount = count;
+	localDevs[0].dev.resize(count);
+	localDevs[0].zeDevices.assign(count, nullptr);
+
+	for (uint32_t j = 0; j < count; j++) {
+		ze_result_t result = localDevs[0].dev[j].smDevInit(zesDrivers[0], healthy[j].second);
 		if (result != ZE_RESULT_SUCCESS) {
-			ERR("Failed to sysman-initialize device {} on reset path: 0x{:X} ({})\n", j, result,
-				l0_error_to_string(result));
+			ERR("Failed to sysman-initialize device {}: 0x{:X} ({})\n", j, result, l0_error_to_string(result));
 			return result;
 		}
 	}
@@ -412,7 +450,27 @@ ze_result_t driver::smOnlyEnumerate()
 		devs[i] = std::move(localDevs[i]);
 	}
 
+	adoptSurvivabilityDevices(survivors);
 	return ZE_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Keeps @p survivors out of the device list, where findSurvDevice() finds them.
+ *
+ * @param[in] survivors  Sysman handles of the devices in survivability mode.
+ */
+void driver::adoptSurvivabilityDevices(const std::vector<zes_device_handle_t> &survivors)
+{
+	if (survivors.empty()) {
+		return;
+	}
+	svZesDevs.zesDriver = zesDrivers[0];
+	svZesDevs.survDevCount = static_cast<uint32_t>(survivors.size());
+	svZesDevs.survDevices = new device[survivors.size()];
+	for (uint32_t k = 0; k < svZesDevs.survDevCount; k++) {
+		svZesDevs.survDevices[k].smDevInit(zesDrivers[0], survivors[k]);
+		svZesDevs.survDevices[k].setSurvivabilityMode(true);
+	}
 }
 
 /**
