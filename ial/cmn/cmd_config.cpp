@@ -2457,21 +2457,18 @@ void declareOptions(CLI::App &sub, ConfigCmdMap &cmds, bool &isQueryMode)
 } // namespace
 
 /**
- * @brief Keeps the compute runtime off a device that --reset is about to reset, and gates --coldreset.
+ * @brief Power-cycling the slot for --coldreset needs Admin.
  *
- * zeInit opens render fds and GuC exec queues on the device. Those queues go
- * stale across the reset, and tearing them down at process exit makes xe emit
- * a "Missing outer runtime PM protection" WARN. Sysman alone is enough to
- * perform the reset. --coldreset does not create compute queues on the target
- * either, but is addressed by BDF and follows a different code path, so it
- * keeps the full driver, and needs Admin to power-cycle the slot.
+ * config stays on sysman like every command does by default. --reset depends
+ * on it: zeInit would open render fds and GuC exec queues on the device, which
+ * go stale across the reset, and tearing them down at exit makes xe emit a
+ * "Missing outer runtime PM protection" WARN.
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval {.driver = DriverMode::None}        @p cmdArgs does not parse; run() reports why.
- * @retval {.driver = DriverMode::SysmanOnly}  --reset.
- * @retval {.required = Capability::Admin}     --coldreset.
- * @retval {.driver = DriverMode::Full}        Otherwise.
+ * @retval {.driver = DriverMode::None}     @p cmdArgs does not parse; run() reports why.
+ * @retval {.required = Capability::Admin}  --coldreset.
+ * @retval {}                               Otherwise.
  */
 CommandPlan cmdConfig::needs(std::span<char *const> cmdArgs) const
 {
@@ -2482,8 +2479,7 @@ CommandPlan cmdConfig::needs(std::span<char *const> cmdArgs) const
 	if (!parsesCleanly(sub, cmdArgs)) {
 		return {.driver = DriverMode::None};
 	}
-	return {.driver = parsed[configCmdType::RESET].enabled ? DriverMode::SysmanOnly : DriverMode::Full,
-			.required = parsed[configCmdType::COLDRESET].enabled ? Capability::Admin : Capability::NONE};
+	return {.required = parsed[configCmdType::COLDRESET].enabled ? Capability::Admin : Capability::NONE};
 }
 
 /**

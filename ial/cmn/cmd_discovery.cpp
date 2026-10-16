@@ -1601,6 +1601,8 @@ ze_result_t cmdDiscovery::eus(devInfo *d, std::string *outputLine)
  */
 static ze_result_t engineCountFromFdinfo(const devInfo *d, const std::string &engineClass, std::string *outputLine)
 {
+	// The counts come from this process's own DRM client; zeInit is not there to provide one.
+	const fdinfo::RegisteredClient client{devPciAddr(*d)};
 	const auto counts = fdinfo::engineCountsPerClass(devPciAddr(*d));
 	if (counts.empty()) {
 		DBG("No fdinfo engine counts for {}\n", devPciAddr(*d));
@@ -2615,6 +2617,64 @@ void cmdDiscovery::printDeviceInfo(std::vector<devInfo> &deviceList, std::vector
 	printer->print(devicesJson.get());
 }
 
+namespace {
+
+using DiscCmdMap = std::unordered_map<discCmdType, discoveryCmdStruct>;
+
+/// Clears @p cmds and declares discovery's options on @p sub, bound into it. run() and needs() share it.
+void declareOptions(CLI::App &sub, DiscCmdMap &cmds)
+{
+	for (auto &[k, v] : cmds) {
+		v.enabled = false;
+		v.val.clear();
+	}
+	sub.set_help_flag("-h,--help", "Print this help message and exit");
+	sub.add_flag("-j,--json", cmds[discCmdType::DISC_JSON].enabled, "Print result in JSON format");
+	sub.add_option("-d,--device,--id", cmds[discCmdType::DISC_DEVICE].val,
+				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
+		->each([&cmds](const std::string &) { cmds[discCmdType::DISC_DEVICE].enabled = true; });
+	sub.add_flag("--pf", cmds[discCmdType::DISC_PF].enabled, "List physical function devices");
+	sub.add_flag("--physicalFunction", cmds[discCmdType::DISC_PHYSICALFUNCTION].enabled,
+				 "List physical function devices (alias for --pf)");
+	sub.add_flag("--vf", cmds[discCmdType::DISC_VF].enabled, "List virtual function devices");
+	sub.add_flag("--virtualFunction", cmds[discCmdType::DISC_VIRTUALFUNCTION].enabled,
+				 "List virtual function devices (alias for --vf)");
+	sub.add_option("--dump", cmds[discCmdType::DISC_DUMP].val, "Dump specific property IDs (comma-separated)")
+		->each([&cmds](const std::string &) { cmds[discCmdType::DISC_DUMP].enabled = true; });
+	sub.add_flag("--listamcversions", cmds[discCmdType::DISC_LISTAMCVERSIONS].enabled, "List AMC firmware versions");
+}
+
+} // namespace
+
+/**
+ * @brief The device list is sysman-only; per-device properties need the compute runtime.
+ *
+ * The detail view and --dump include properties only the core API reports
+ * (max allocation size, EU SIMD width, the EU count extension).
+ *
+ * @param[in] cmdArgs  argv tokens after the subcommand name.
+ *
+ * @retval {.driver = DriverMode::None}  @p cmdArgs does not parse; run() reports why.
+ * @retval {.driver = DriverMode::Full}  --dump, or --device without --listamcversions.
+ * @retval {}                            Otherwise.
+ */
+CommandPlan cmdDiscovery::needs(std::span<char *const> cmdArgs) const
+{
+	DiscCmdMap parsed = discCmds;
+	CLI::App sub;
+	declareOptions(sub, parsed);
+	if (!parsesCleanly(sub, cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	const bool perDevice =
+		parsed[discCmdType::DISC_DUMP].enabled ||
+		(parsed[discCmdType::DISC_DEVICE].enabled && !parsed[discCmdType::DISC_LISTAMCVERSIONS].enabled);
+	if (perDevice) {
+		return {.driver = DriverMode::Full};
+	}
+	return {};
+}
+
 /**
  * @brief Executes the discovery run.
  *
@@ -2628,28 +2688,8 @@ int cmdDiscovery::run(arg_struct *args)
 	bool headingFirst = true;
 	std::unique_ptr<Printer> printer;
 
-	// Reset state
-	for (auto &[k, v] : discCmds) {
-		v.enabled = false;
-		v.val.clear();
-	}
-
 	CLI::App sub{"Discover Intel GPU devices", "discovery"};
-	sub.set_help_flag("-h,--help", "Print this help message and exit");
-	sub.add_flag("-j,--json", discCmds[discCmdType::DISC_JSON].enabled, "Print result in JSON format");
-	sub.add_option("-d,--device,--id", discCmds[discCmdType::DISC_DEVICE].val,
-				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
-		->each([&](const std::string &) { discCmds[discCmdType::DISC_DEVICE].enabled = true; });
-	sub.add_flag("--pf", discCmds[discCmdType::DISC_PF].enabled, "List physical function devices");
-	sub.add_flag("--physicalFunction", discCmds[discCmdType::DISC_PHYSICALFUNCTION].enabled,
-				 "List physical function devices (alias for --pf)");
-	sub.add_flag("--vf", discCmds[discCmdType::DISC_VF].enabled, "List virtual function devices");
-	sub.add_flag("--virtualFunction", discCmds[discCmdType::DISC_VIRTUALFUNCTION].enabled,
-				 "List virtual function devices (alias for --vf)");
-	sub.add_option("--dump", discCmds[discCmdType::DISC_DUMP].val, "Dump specific property IDs (comma-separated)")
-		->each([&](const std::string &) { discCmds[discCmdType::DISC_DUMP].enabled = true; });
-	sub.add_flag("--listamcversions", discCmds[discCmdType::DISC_LISTAMCVERSIONS].enabled,
-				 "List AMC firmware versions");
+	declareOptions(sub, discCmds);
 
 	try {
 		sub.parse(args->argc - 1, args->argv + 1);

@@ -65,7 +65,8 @@ CommandPlan cmds::plan(std::span<char *const> cmdArgs) const
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval {.driver = DriverMode::Full}  Default for every command that queries devices.
+ * @retval {.driver = DriverMode::SysmanOnly}  Default: sysman serves every device query except
+ *                                             the few that override this.
  */
 CommandPlan cmds::needs(UNUSED std::span<char *const> cmdArgs) const { return {}; }
 

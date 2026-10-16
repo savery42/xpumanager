@@ -417,10 +417,7 @@ constexpr std::array PS_FEATURES{OptionalFeature{"EU active/stall columns", Capa
  *
  * @retval {.driver = DriverMode::SysmanOnly, .optional = EU columns}  Always.
  */
-CommandPlan cmdPs::needs(UNUSED std::span<char *const> cmdArgs) const
-{
-	return {.driver = DriverMode::SysmanOnly, .optional = PS_FEATURES};
-}
+CommandPlan cmdPs::needs(UNUSED std::span<char *const> cmdArgs) const { return {.optional = PS_FEATURES}; }
 
 /**
  * @brief Executes the ps run.

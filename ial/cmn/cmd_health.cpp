@@ -783,11 +783,11 @@ ze_result_t cmdHealth::frequency(UNUSED devInfo *d, nlohmann::ordered_json *json
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
  * @retval {.driver = DriverMode::None}  @p cmdArgs is empty.
- * @retval {.driver = DriverMode::Full}  Otherwise.
+ * @retval {.driver = DriverMode::SysmanOnly}  Otherwise.
  */
 CommandPlan cmdHealth::needs(std::span<char *const> cmdArgs) const
 {
-	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
+	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::SysmanOnly};
 }
 
 /**

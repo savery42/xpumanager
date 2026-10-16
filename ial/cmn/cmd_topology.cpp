@@ -1109,17 +1109,63 @@ ze_result_t cmdTopology::showP2PMatrix(bool useJson, P2PCapability capability)
 	return result;
 }
 
+namespace {
+
+using TopologyCmdMap = std::unordered_map<topologyCmdType, TopologyCmdStruct>;
+
+/// Clears @p cmds and declares topology's options on @p sub, bound into it. run() and needs() share it.
+void declareOptions(CLI::App &sub, TopologyCmdMap &cmds, std::string &xmlFile)
+{
+	for (auto &[k, v] : cmds) {
+		v.enabled = false;
+		v.val.clear();
+	}
+	sub.set_help_flag("-h,--help", "Print this help message and exit");
+	sub.add_flag("-j,--json", cmds[topologyCmdType::TOPOLOGY_JSON].enabled, "Output in JSON format");
+	sub.add_option("-d,--device,--id", cmds[topologyCmdType::TOPOLOGY_DEVICE].val,
+				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
+		->each([&cmds](const std::string &) { cmds[topologyCmdType::TOPOLOGY_DEVICE].enabled = true; });
+	sub.add_option("-f,--file", cmds[topologyCmdType::TOPOLOGY_FILE].val, "Output XML file path")
+		->each([&cmds, &xmlFile](const std::string &val) {
+			cmds[topologyCmdType::TOPOLOGY_FILE].enabled = true;
+			xmlFile = val;
+		});
+	sub.add_flag("-m,--matrix", cmds[topologyCmdType::TOPOLOGY_MATRIX].enabled, "Show topology matrix");
+	sub.add_option("--p2p", cmds[topologyCmdType::TOPOLOGY_P2P].val,
+				   "P2P capability matrix (r=read, w=write, n=fabric/MDF, a=atomics, p=pcie)")
+		->each([&cmds](const std::string &) { cmds[topologyCmdType::TOPOLOGY_P2P].enabled = true; });
+}
+
+} // namespace
+
 /**
- * @brief A bare `topology` only prints help; every action queries devices.
+ * @brief Only the P2P matrix needs the compute runtime; a bare `topology` prints help.
+ *
+ * zeDeviceCanAccessPeer and zeDeviceGetP2PProperties have no sysman
+ * equivalent; the topology itself comes from hwloc and sysman.
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval {.driver = DriverMode::None}  @p cmdArgs is empty.
- * @retval {.driver = DriverMode::Full}  Otherwise.
+ * @retval {.driver = DriverMode::None}  @p cmdArgs is empty or does not parse.
+ * @retval {.driver = DriverMode::Full}  --p2p.
+ * @retval {}                            Otherwise.
  */
 CommandPlan cmdTopology::needs(std::span<char *const> cmdArgs) const
 {
-	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
+	if (printsHelpOnly(cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	TopologyCmdMap parsed = topologyCmds;
+	std::string xmlFile;
+	CLI::App sub;
+	declareOptions(sub, parsed, xmlFile);
+	if (!parsesCleanly(sub, cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	if (parsed[topologyCmdType::TOPOLOGY_P2P].enabled) {
+		return {.driver = DriverMode::Full};
+	}
+	return {};
 }
 
 /**
@@ -1168,27 +1214,8 @@ int cmdTopology::run(arg_struct *args)
 	std::vector<devInfo> deviceList;
 	ze_result_t result;
 
-	// Reset all cmd states before parsing
-	for (auto &[k, v] : topologyCmds) {
-		v.enabled = false;
-		v.val.clear();
-	}
-
 	CLI::App sub{"Show GPU topology information", "topology"};
-	sub.set_help_flag("-h,--help", "Print this help message and exit");
-	sub.add_flag("-j,--json", topologyCmds[topologyCmdType::TOPOLOGY_JSON].enabled, "Output in JSON format");
-	sub.add_option("-d,--device,--id", topologyCmds[topologyCmdType::TOPOLOGY_DEVICE].val,
-				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
-		->each([&](const std::string &) { topologyCmds[topologyCmdType::TOPOLOGY_DEVICE].enabled = true; });
-	sub.add_option("-f,--file", topologyCmds[topologyCmdType::TOPOLOGY_FILE].val, "Output XML file path")
-		->each([&](const std::string &val) {
-			topologyCmds[topologyCmdType::TOPOLOGY_FILE].enabled = true;
-			xmlFilename = val;
-		});
-	sub.add_flag("-m,--matrix", topologyCmds[topologyCmdType::TOPOLOGY_MATRIX].enabled, "Show topology matrix");
-	sub.add_option("--p2p", topologyCmds[topologyCmdType::TOPOLOGY_P2P].val,
-				   "P2P capability matrix (r=read, w=write, n=fabric/MDF, a=atomics, p=pcie)")
-		->each([&](const std::string &) { topologyCmds[topologyCmdType::TOPOLOGY_P2P].enabled = true; });
+	declareOptions(sub, topologyCmds, xmlFilename);
 
 	try {
 		sub.parse(args->argc - 1, args->argv + 1);

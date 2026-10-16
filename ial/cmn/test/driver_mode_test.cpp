@@ -59,11 +59,21 @@ public:
 // the same selection runCli() makes.
 TEST_SUITE("cmds::plan driver")
 {
-	TEST_CASE("device-facing commands default to the full driver")
+	TEST_CASE("device-facing commands default to sysman only")
 	{
 		const cmdDiscovery discovery;
-		CHECK(discovery.plan(Argv{}.view()).driver == DriverMode::Full);
+		CHECK(discovery.plan(Argv{}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(discovery.plan(Argv{"--pf", "-j"}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdVgpu{}.plan(Argv{"-l", "-d", "0"}.view()).driver == DriverMode::SysmanOnly);
+	}
+
+	TEST_CASE("only properties, P2P and EU without a sysman source need the compute runtime")
+	{
+		const cmdDiscovery discovery;
 		CHECK(discovery.plan(Argv{"-d", "0", "-j"}.view()).driver == DriverMode::Full);
+		CHECK(discovery.plan(Argv{"--dump", "30"}.view()).driver == DriverMode::Full);
+		CHECK(discovery.plan(Argv{"-d", "0", "--listamcversions"}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdTopology{}.plan(Argv{"--p2p", "r"}.view()).driver == DriverMode::Full);
 	}
 
 	TEST_CASE("-h and --help never need the driver")
@@ -83,12 +93,12 @@ TEST_SUITE("cmds::plan driver")
 		CHECK(cmdTopology{}.plan(Argv{}.view()).driver == DriverMode::None);
 	}
 
-	TEST_CASE("the same commands need the driver once they have work to do")
+	TEST_CASE("the same commands need sysman once they have work to do")
 	{
 		CHECK(cmdDump{}.plan(Argv{"-d", "0", "--metrics", "name"}.view()).driver == DriverMode::SysmanOnly);
-		CHECK(cmdHealth{}.plan(Argv{"-d", "0"}.view()).driver == DriverMode::Full);
-		CHECK(cmdCrashlog{}.plan(Argv{"--extract", "-d", "0"}.view()).driver == DriverMode::Full);
-		CHECK(cmdTopology{}.plan(Argv{"-m"}.view()).driver == DriverMode::Full);
+		CHECK(cmdHealth{}.plan(Argv{"-d", "0"}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdCrashlog{}.plan(Argv{"--extract", "-d", "0"}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdTopology{}.plan(Argv{"-m"}.view()).driver == DriverMode::SysmanOnly);
 	}
 
 	TEST_CASE("commands that never touch Level Zero need no driver")
@@ -102,18 +112,16 @@ TEST_SUITE("cmds::plan driver")
 	TEST_CASE("config keeps the compute runtime off a device it is about to reset")
 	{
 		const cmdConfig config;
-		CHECK(config.plan(Argv{"-d", "0", "--reset"}.view()).driver == DriverMode::SysmanOnly);
-		CHECK(config.plan(Argv{"--reset", "-d", "0"}.view()).driver == DriverMode::SysmanOnly);
-		CHECK(config.plan(Argv{"-d", "0"}.view()).driver == DriverMode::Full);
-		CHECK(config.plan(Argv{"-d", "0", "--resetfrequencyrange"}.view()).driver == DriverMode::Full);
-		CHECK(config.plan(Argv{"-d", "0000:03:00.0", "--coldreset"}.view()).driver == DriverMode::Full);
+		for (const char *form : {"--reset", "--reset=true", "--resetfrequencyrange", "--coldreset"}) {
+			CAPTURE(form);
+			CHECK(config.plan(Argv{"-d", "0", form}.view()).driver == DriverMode::SysmanOnly);
+		}
 	}
 
 	TEST_CASE("a spelling CLI11 accepts is seen the same way")
 	{
-		const cmdConfig config;
-		CHECK(config.plan(Argv{"-d", "0", "--reset=true"}.view()).driver == DriverMode::SysmanOnly);
-		CHECK(config.plan(Argv{"-d", "0", "--reset=false"}.view()).driver == DriverMode::Full);
+		CHECK(cmdTopology{}.plan(Argv{"--p2p=r"}.view()).driver == DriverMode::Full);
+		CHECK(cmdDiscovery{}.plan(Argv{"--device=0"}.view()).driver == DriverMode::Full);
 	}
 
 	TEST_CASE("arguments that do not parse need no driver: run() reports the error first")

@@ -39,8 +39,8 @@ struct OptionalFeature
  */
 struct CommandPlan
 {
-	DriverMode driver{DriverMode::Full};   ///< Baseline, before any optional feature
-	Capability required{Capability::NONE}; ///< Missing any of these: refuse before driver init
+	DriverMode driver{DriverMode::SysmanOnly}; ///< Baseline, before any optional feature
+	Capability required{Capability::NONE};	   ///< Missing any of these: refuse before driver init
 	/// Skipped with a notice when not held. Must view static storage: a plan outlives the call that made it.
 	std::span<const OptionalFeature> optional{};
 };

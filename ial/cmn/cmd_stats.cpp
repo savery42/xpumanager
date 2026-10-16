@@ -2905,7 +2905,7 @@ CommandPlan cmdStats::needs(std::span<char *const> cmdArgs) const
 	if (!parsesCleanly(sub, cmdArgs)) {
 		return {.driver = DriverMode::None};
 	}
-	CommandPlan plan{.driver = DriverMode::SysmanOnly};
+	CommandPlan plan;
 	if (parsed[STATS_EU].enabled) {
 		plan.optional = STATS_EU_FEATURES;
 	}

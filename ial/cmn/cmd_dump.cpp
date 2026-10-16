@@ -1266,7 +1266,7 @@ CommandPlan cmdDump::queryPlan(std::span<const metrics::QueryMetric *const> fiel
 	if (fields.empty()) {
 		return {.driver = DriverMode::None};
 	}
-	CommandPlan plan{.driver = DriverMode::SysmanOnly};
+	CommandPlan plan;
 	if (std::ranges::any_of(fields,
 							[](const metrics::QueryMetric *f) { return f->inputs == metrics::MetricInput::EU; })) {
 		plan.optional = EU_FIELD_FEATURES;

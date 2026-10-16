@@ -97,7 +97,7 @@ public:
 	[[nodiscard]] virtual bool recoversWithoutDriver(std::span<char *const> cmdArgs) const;
 
 protected:
-	/// Override to declare what this command needs. Default: the full driver, no privilege.
+	/// Override to declare what this command needs. Default: sysman only, no privilege.
 	[[nodiscard]] virtual CommandPlan needs(std::span<char *const> cmdArgs) const;
 };
 

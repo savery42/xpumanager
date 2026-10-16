@@ -187,6 +187,9 @@ public:
 	std::unique_ptr<nlohmann::ordered_json> printDeviceDetail(devInfo *device, devFuncType funcType);
 
 	int run(arg_struct *args);
+
+protected:
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 using discoveryHeadingFunc = ze_result_t (cmdDiscovery::*)(nlohmann::ordered_json *headingJson);
