@@ -1019,7 +1019,7 @@ void printSelectorGuidance(QuerySelector selector)
 }
 
 // `dump` and `dump help` print help without touching a device;
-// run() and driverMode() both use this so they cannot disagree.
+// run() and needs() both use this so they cannot disagree.
 [[nodiscard]] bool printsHelpOnly(std::span<char *const> cmdArgs)
 {
 	return cmdArgs.empty() || (cmdArgs.size() == 1 && std::string_view{cmdArgs.front()} == "help");
@@ -1236,12 +1236,12 @@ void cmdDump::help(HELP helpType)
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::None  @p cmdArgs is empty or the bare `help` keyword.
- * @retval DriverMode::Full  Otherwise.
+ * @retval {.driver = DriverMode::None}  @p cmdArgs is empty or the bare `help` keyword.
+ * @retval {.driver = DriverMode::Full}  Otherwise.
  */
-DriverMode cmdDump::driverMode(std::span<char *const> cmdArgs) const
+CommandPlan cmdDump::needs(std::span<char *const> cmdArgs) const
 {
-	return printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full;
+	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
 }
 
 // -- run

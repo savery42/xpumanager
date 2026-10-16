@@ -27,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <os.h>
+#include <privilege.h>
 #include <ranges>
 #include <string>
 #include <vector>
@@ -166,8 +167,7 @@ int main(int argc, char *argv[])
 			Logger::instance().setLevel(LogLevel::ERR);
 		}
 	}
-	bool priv = PRIVILEGECHECK();
-	UNUSED_VAR(priv);
+	arg.held = currentPrivileges();
 
 	// Sync the library's log level now; Level Zero itself is brought up per
 	// command by requireDriver().

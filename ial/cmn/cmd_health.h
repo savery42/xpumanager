@@ -84,7 +84,7 @@ public:
 	int run(arg_struct *args);
 
 protected:
-	[[nodiscard]] DriverMode driverMode(std::span<char *const> cmdArgs) const override;
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 using healthSubCmdFunc = ze_result_t (cmdHealth::*)(devInfo *d, nlohmann::ordered_json *jsonObj);

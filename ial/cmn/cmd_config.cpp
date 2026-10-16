@@ -2304,11 +2304,6 @@ ze_result_t cmdConfig::coldResetDevice(devInfo *d)
 {
 	TRACING();
 
-	if (!PRIVILEGECHECK()) {
-		ERR("Cold reset requires elevated privileges (root or 'xpum' group on Linux).\n");
-		return ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;
-	}
-
 	const std::string bdfStr = d->dev->getBDFStr();
 
 	if (!configCmds[configCmdType::IGNORE_GPU_USER_PROCESSES].enabled) {
@@ -2353,25 +2348,142 @@ ze_result_t cmdConfig::coldResetDevice(devInfo *d)
 	return ZE_RESULT_SUCCESS;
 }
 
+namespace {
+
+using ConfigCmdMap = std::unordered_map<configCmdType, configCmdStruct>;
+
 /**
- * @brief Keeps the compute runtime off a device that --reset is about to reset.
+ * @brief Clears @p cmds and declares config's options on @p sub, bound into it.
+ *
+ * run() and needs() share this declaration, so they cannot disagree about a flag.
+ *
+ * @param[in,out] sub          App to declare the options on.
+ * @param[out]    cmds         Receives each option's value as @p sub parses.
+ * @param[out]    isQueryMode  Cleared when a setting option is parsed.
+ */
+void declareOptions(CLI::App &sub, ConfigCmdMap &cmds, bool &isQueryMode)
+{
+	for (auto &[k, v] : cmds) {
+		v.enabled = false;
+		v.val.clear();
+	}
+
+	sub.set_help_flag("-h,--help", "Print this help message and exit");
+	sub.add_flag("-j,--json", cmds[configCmdType::CONFIGJSON].enabled, "Print result in JSON format");
+	sub.add_option("-d,--device,--id", cmds[configCmdType::CONFIGDEVICE].val,
+				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
+		->each([&cmds](const std::string &) { cmds[configCmdType::CONFIGDEVICE].enabled = true; });
+	sub.add_option("-t,--tile", cmds[configCmdType::TILE].val, "Tile ID")->each([&cmds](const std::string &) {
+		cmds[configCmdType::TILE].enabled = true;
+	});
+	sub.add_option("--set-health-status", cmds[configCmdType::SET_HEALTH_STATUS].val,
+				   "Set device health status (ok|warning|critical|failed), requires root privileges")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::SET_HEALTH_STATUS].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--frequencyrange", cmds[configCmdType::FREQUENCYRANGE].val,
+				   "Set frequency range (MHz), e.g. minFreq:maxFreq")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::FREQUENCYRANGE].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--frequencylock", cmds[configCmdType::FREQUENCYLOCK].val,
+				   "Lock GT frequency to a single value (MHz); sets min == max")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::FREQUENCYLOCK].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_flag("--resetfrequencyrange", cmds[configCmdType::RESETFREQUENCYRANGE].enabled,
+				 "Reset frequency range to the hardware default");
+	sub.add_option("--powerlimit", cmds[configCmdType::POWERLIMIT].val, "Set power limit (W)")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::POWERLIMIT].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--standby", cmds[configCmdType::STANDBYMODE].val, "Set standby mode")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::STANDBYMODE].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--scheduler", cmds[configCmdType::SCHEDULERMODE].val, "Set scheduler mode")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::SCHEDULERMODE].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--memoryecc", cmds[configCmdType::MEMORYECC].val, "Enable (1) or disable (0) ECC")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::MEMORYECC].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--pciedowngrade", cmds[configCmdType::PCIEDOWNGRADE].val, "Set PCIe generation downgrade")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::PCIEDOWNGRADE].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_flag("--reset", cmds[configCmdType::RESET].enabled, "Reset the GPU");
+	sub.add_option("--powertype", cmds[configCmdType::POWERTYPE].val, "Power type")->each([&cmds](const std::string &) {
+		cmds[configCmdType::POWERTYPE].enabled = true;
+	});
+	sub.add_flag("--clear-ras-errors", cmds[configCmdType::CLEARRAS].enabled, "Clear RAS error counters");
+	sub.add_option("--fanspeed", cmds[configCmdType::FANSPEED].val,
+				   "Set fan speed (%). Use --fanid to target a specific fan; omit for all fans")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::FANSPEED].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--fancurve", cmds[configCmdType::FANCURVE].val,
+				   "Set fan curve as temp:speed pairs, e.g. 50:20,80:60,100:100")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::FANCURVE].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--fancurve-rpm", cmds[configCmdType::FANCURVERPM].val,
+				   "Set fan curve in RPM as temp:rpm pairs, e.g. 50:800,80:1200")
+		->each([&cmds, &isQueryMode](const std::string &) {
+			cmds[configCmdType::FANCURVERPM].enabled = true;
+			isQueryMode = false;
+		});
+	sub.add_option("--fanid", cmds[configCmdType::FANID].val, "Target fan ID (-1 = all fans, 0..N-1 = specific fan)")
+		->each([&cmds](const std::string &) { cmds[configCmdType::FANID].enabled = true; });
+	sub.add_flag("--coldreset", cmds[configCmdType::COLDRESET].enabled,
+				 "Cold-reset the device (requires PCI BDF address for --device, not a device index)");
+	sub.add_flag("--ignore-gpu-user-processes", cmds[configCmdType::IGNORE_GPU_USER_PROCESSES].enabled,
+				 "Skip check for running GPU user processes before reset");
+	sub.add_flag("--force-reset-gpus", cmds[configCmdType::FORCE_RESET_GPUS].enabled,
+				 "Force GPU reset even if user processes are present");
+}
+
+} // namespace
+
+/**
+ * @brief Keeps the compute runtime off a device that --reset is about to reset, and gates --coldreset.
  *
  * zeInit opens render fds and GuC exec queues on the device. Those queues go
  * stale across the reset, and tearing them down at process exit makes xe emit
  * a "Missing outer runtime PM protection" WARN. Sysman alone is enough to
  * perform the reset. --coldreset does not create compute queues on the target
  * either, but is addressed by BDF and follows a different code path, so it
- * keeps the full driver.
+ * keeps the full driver, and needs Admin to power-cycle the slot.
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::SysmanOnly  @p cmdArgs contains --reset.
- * @retval DriverMode::Full        Otherwise.
+ * @retval {.driver = DriverMode::None}        @p cmdArgs does not parse; run() reports why.
+ * @retval {.driver = DriverMode::SysmanOnly}  --reset.
+ * @retval {.required = Capability::Admin}     --coldreset.
+ * @retval {.driver = DriverMode::Full}        Otherwise.
  */
-DriverMode cmdConfig::driverMode(std::span<char *const> cmdArgs) const
+CommandPlan cmdConfig::needs(std::span<char *const> cmdArgs) const
 {
-	const bool reset = std::ranges::any_of(cmdArgs, [](std::string_view token) { return token == "--reset"; });
-	return reset ? DriverMode::SysmanOnly : DriverMode::Full;
+	ConfigCmdMap parsed = configCmds;
+	bool isQueryMode = true;
+	CLI::App sub;
+	declareOptions(sub, parsed, isQueryMode);
+	if (!parsesCleanly(sub, cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	return {.driver = parsed[configCmdType::RESET].enabled ? DriverMode::SysmanOnly : DriverMode::Full,
+			.required = parsed[configCmdType::COLDRESET].enabled ? Capability::Admin : Capability::NONE};
 }
 
 /**
@@ -2379,7 +2491,7 @@ DriverMode cmdConfig::driverMode(std::span<char *const> cmdArgs) const
  *
  * A wedged GPU is not reported by Level Zero, alone or next to working ones;
  * --reset and --coldreset then resolve its BDF with findDeviceForRecovery().
- * Like driverMode(), this matches the plain flags only: a spelling CLI11 also
+ * Like needs(), this matches the plain flags only: a spelling CLI11 also
  * accepts, such as --reset=true, keeps a driver failure fatal (fails closed).
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
@@ -2405,97 +2517,8 @@ int cmdConfig::run(arg_struct *args)
 	ze_result_t result;
 	bool isQueryMode = true;
 
-	// Reset state
-	for (auto &[k, v] : configCmds) {
-		v.enabled = false;
-		v.val.clear();
-	}
-
 	CLI::App sub{"Configure GPU settings", "config"};
-	sub.set_help_flag("-h,--help", "Print this help message and exit");
-	sub.add_flag("-j,--json", configCmds[configCmdType::CONFIGJSON].enabled, "Print result in JSON format");
-	sub.add_option("-d,--device,--id", configCmds[configCmdType::CONFIGDEVICE].val,
-				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
-		->each([&](const std::string &) { configCmds[configCmdType::CONFIGDEVICE].enabled = true; });
-	sub.add_option("-t,--tile", configCmds[configCmdType::TILE].val, "Tile ID")->each([&](const std::string &) {
-		configCmds[configCmdType::TILE].enabled = true;
-	});
-	sub.add_option("--set-health-status", configCmds[configCmdType::SET_HEALTH_STATUS].val,
-				   "Set device health status (ok|warning|critical|failed), requires root privileges")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::SET_HEALTH_STATUS].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--frequencyrange", configCmds[configCmdType::FREQUENCYRANGE].val,
-				   "Set frequency range (MHz), e.g. minFreq:maxFreq")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::FREQUENCYRANGE].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--frequencylock", configCmds[configCmdType::FREQUENCYLOCK].val,
-				   "Lock GT frequency to a single value (MHz); sets min == max")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::FREQUENCYLOCK].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_flag("--resetfrequencyrange", configCmds[configCmdType::RESETFREQUENCYRANGE].enabled,
-				 "Reset frequency range to the hardware default");
-	sub.add_option("--powerlimit", configCmds[configCmdType::POWERLIMIT].val, "Set power limit (W)")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::POWERLIMIT].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--standby", configCmds[configCmdType::STANDBYMODE].val, "Set standby mode")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::STANDBYMODE].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--scheduler", configCmds[configCmdType::SCHEDULERMODE].val, "Set scheduler mode")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::SCHEDULERMODE].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--memoryecc", configCmds[configCmdType::MEMORYECC].val, "Enable (1) or disable (0) ECC")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::MEMORYECC].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--pciedowngrade", configCmds[configCmdType::PCIEDOWNGRADE].val, "Set PCIe generation downgrade")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::PCIEDOWNGRADE].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_flag("--reset", configCmds[configCmdType::RESET].enabled, "Reset the GPU");
-	sub.add_option("--powertype", configCmds[configCmdType::POWERTYPE].val, "Power type")
-		->each([&](const std::string &) { configCmds[configCmdType::POWERTYPE].enabled = true; });
-	sub.add_flag("--clear-ras-errors", configCmds[configCmdType::CLEARRAS].enabled, "Clear RAS error counters");
-	sub.add_option("--fanspeed", configCmds[configCmdType::FANSPEED].val,
-				   "Set fan speed (%). Use --fanid to target a specific fan; omit for all fans")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::FANSPEED].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--fancurve", configCmds[configCmdType::FANCURVE].val,
-				   "Set fan curve as temp:speed pairs, e.g. 50:20,80:60,100:100")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::FANCURVE].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--fancurve-rpm", configCmds[configCmdType::FANCURVERPM].val,
-				   "Set fan curve in RPM as temp:rpm pairs, e.g. 50:800,80:1200")
-		->each([&](const std::string &) {
-			configCmds[configCmdType::FANCURVERPM].enabled = true;
-			isQueryMode = false;
-		});
-	sub.add_option("--fanid", configCmds[configCmdType::FANID].val,
-				   "Target fan ID (-1 = all fans, 0..N-1 = specific fan)")
-		->each([&](const std::string &) { configCmds[configCmdType::FANID].enabled = true; });
-	sub.add_flag("--coldreset", configCmds[configCmdType::COLDRESET].enabled,
-				 "Cold-reset the device (requires PCI BDF address for --device, not a device index)");
-	sub.add_flag("--ignore-gpu-user-processes", configCmds[configCmdType::IGNORE_GPU_USER_PROCESSES].enabled,
-				 "Skip check for running GPU user processes before reset");
-	sub.add_flag("--force-reset-gpus", configCmds[configCmdType::FORCE_RESET_GPUS].enabled,
-				 "Force GPU reset even if user processes are present");
+	declareOptions(sub, configCmds, isQueryMode);
 
 	try {
 		sub.parse(args->argc - 1, args->argv + 1);

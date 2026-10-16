@@ -109,7 +109,6 @@ struct option
 #define optional_argument 2
 #define GETGFXFWSTATUS(meiPath) GfxFwStatus::NORMAL
 #define GETPCHPRODSTATE(meiPath) (UNUSED_VAR(meiPath), std::string{})
-#define PRIVILEGECHECK() true
 #define SETENV(name, value) _putenv_s(name, value)
 #define MSLEEP(ms) Sleep(ms)
 #define GETCH (char)_getch

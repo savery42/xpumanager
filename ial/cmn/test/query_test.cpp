@@ -979,7 +979,7 @@ TEST_SUITE("query command line")
 			for (const char *t : tokens) {
 				argv.push_back(const_cast<char *>(t));
 			}
-			return command.requiredDriver(argv);
+			return command.plan(argv).driver;
 		};
 		CHECK(driverFor({"help"}) == DriverMode::None);
 		CHECK(driverFor({"-h"}) == DriverMode::None);

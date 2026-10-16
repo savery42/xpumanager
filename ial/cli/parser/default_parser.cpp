@@ -347,10 +347,7 @@ void DefaultParser::printExtraOptions()
 std::optional<int> DefaultParser::handleTopLevel(arg_struct *args, const std::vector<std::unique_ptr<cmds>> &cmdList)
 {
 	if (args->argc == 1) {
-		if (auto rc = requireDriver(args, DriverMode::Full); rc.has_value()) {
-			return rc;
-		}
-		return runSmiWithLoop(args, 0, 0);
+		return runPlanned(args, progName(), CommandPlan{}, [&] { return runSmiWithLoop(args, 0, 0); });
 	}
 
 	if (!STRCASECMP(args->argv[1], "help")) {
@@ -436,10 +433,7 @@ std::optional<int> DefaultParser::handleTopLevel(arg_struct *args, const std::ve
 		return 0;
 	}
 	if (listGpusFlag) {
-		if (auto rc = requireDriver(args, DriverMode::Full); rc.has_value()) {
-			return rc;
-		}
-		return cmdDump::listGpus(args);
+		return runPlanned(args, "--list-gpus", CommandPlan{}, [&] { return cmdDump::listGpus(args); });
 	}
 	if (pre.queryGpuFlag || !pre.displayType.empty()) {
 		// Bare --query-gpu with no fields: show available fields
@@ -457,10 +451,10 @@ std::optional<int> DefaultParser::handleTopLevel(arg_struct *args, const std::ve
 		if (fromDisplay) {
 			selector = pre.displayFlag == "--metrics" ? QuerySelector::Metrics : QuerySelector::Display;
 		}
-		if (auto rc = requireDriver(args, DriverMode::Full); rc.has_value()) {
-			return rc;
-		}
-		return cmdDump::runQuery(effectiveQuery, pre.deviceSpec, args, buildQueryFormat(pre, formatStr), selector);
+		const std::string_view queryFlag = fromDisplay ? pre.displayFlag : std::string_view{"--query-gpu"};
+		return runPlanned(args, queryFlag, CommandPlan{}, [&] {
+			return cmdDump::runQuery(effectiveQuery, pre.deviceSpec, args, buildQueryFormat(pre, formatStr), selector);
+		});
 	}
 
 	// Checked before the remaining tokens: a trailing "--" ends the options, but CLI11 hands it
@@ -472,12 +466,11 @@ std::optional<int> DefaultParser::handleTopLevel(arg_struct *args, const std::ve
 	// If no subcommand tokens remain, run the default smi view (possibly looped).
 	// Otherwise fall through to subcommand dispatch (e.g., xpu-smi -f file.txt dump help).
 	if (argvVec.empty()) {
-		if (auto rc = requireDriver(args, DriverMode::Full); rc.has_value()) {
-			return rc;
-		}
 		const auto fmt = buildQueryFormat(pre, formatStr);
 		const int loopMs = (fmt.count > 0 && fmt.loopMs <= 0) ? 1000 : fmt.loopMs;
-		return runSmiWithLoop(args, loopMs, fmt.count, stdoutIsTerminal() && pre.logFilePath.empty());
+		return runPlanned(args, progName(), CommandPlan{}, [&] {
+			return runSmiWithLoop(args, loopMs, fmt.count, stdoutIsTerminal() && pre.logFilePath.empty());
+		});
 	}
 	return std::nullopt;
 }

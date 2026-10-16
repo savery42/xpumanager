@@ -169,9 +169,9 @@ void cmdAmc::help(HELP helpType)
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name (unused).
  *
- * @retval DriverMode::None  Always.
+ * @retval {.driver = DriverMode::None}  Always.
  */
-DriverMode cmdAmc::driverMode(UNUSED std::span<char *const> cmdArgs) const { return DriverMode::None; }
+CommandPlan cmdAmc::needs(UNUSED std::span<char *const> cmdArgs) const { return {.driver = DriverMode::None}; }
 
 /**
  * @brief Executes the AMC command with parsed arguments

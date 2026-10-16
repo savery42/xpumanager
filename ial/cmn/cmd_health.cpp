@@ -51,7 +51,7 @@ void setTemperatureFailureJson(nlohmann::ordered_json *jsonObj, const std::strin
 }
 
 // A bare `health` prints help without touching a device;
-// run() and driverMode() both use this so they cannot disagree.
+// run() and needs() both use this so they cannot disagree.
 [[nodiscard]] bool printsHelpOnly(std::span<char *const> cmdArgs) { return cmdArgs.empty(); }
 } // namespace
 
@@ -782,12 +782,12 @@ ze_result_t cmdHealth::frequency(UNUSED devInfo *d, nlohmann::ordered_json *json
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::None  @p cmdArgs is empty.
- * @retval DriverMode::Full  Otherwise.
+ * @retval {.driver = DriverMode::None}  @p cmdArgs is empty.
+ * @retval {.driver = DriverMode::Full}  Otherwise.
  */
-DriverMode cmdHealth::driverMode(std::span<char *const> cmdArgs) const
+CommandPlan cmdHealth::needs(std::span<char *const> cmdArgs) const
 {
-	return printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full;
+	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
 }
 
 /**

@@ -104,9 +104,9 @@ void ListgpuTextPrinter::print(nlohmann::ordered_json *jsonObj)
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name (unused).
  *
- * @retval DriverMode::None  Always.
+ * @retval {.driver = DriverMode::None}  Always.
  */
-DriverMode cmdListpciinfo::driverMode(UNUSED std::span<char *const> cmdArgs) const { return DriverMode::None; }
+CommandPlan cmdListpciinfo::needs(UNUSED std::span<char *const> cmdArgs) const { return {.driver = DriverMode::None}; }
 
 /**
  * @brief Runs the listpciinfo command

@@ -130,7 +130,7 @@ void cmdCrashlog::help(HELP helpType)
 namespace {
 
 // A bare `crashlog` prints help without touching a device;
-// run() and driverMode() both use this so they cannot disagree.
+// run() and needs() both use this so they cannot disagree.
 [[nodiscard]] bool printsHelpOnly(std::span<char *const> cmdArgs) { return cmdArgs.empty(); }
 
 } // namespace
@@ -140,12 +140,12 @@ namespace {
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::None  @p cmdArgs is empty.
- * @retval DriverMode::Full  Otherwise.
+ * @retval {.driver = DriverMode::None}  @p cmdArgs is empty.
+ * @retval {.driver = DriverMode::Full}  Otherwise.
  */
-DriverMode cmdCrashlog::driverMode(std::span<char *const> cmdArgs) const
+CommandPlan cmdCrashlog::needs(std::span<char *const> cmdArgs) const
 {
-	return printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full;
+	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
 }
 
 /**

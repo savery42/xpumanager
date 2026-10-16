@@ -131,7 +131,7 @@ public:
 	[[nodiscard]] bool recoversWithoutDriver(std::span<char *const> cmdArgs) const override;
 
 protected:
-	[[nodiscard]] DriverMode driverMode(std::span<char *const> cmdArgs) const override;
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 using configSubCmdFunc = ze_result_t (cmdConfig::*)(devInfo *d);

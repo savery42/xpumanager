@@ -44,6 +44,9 @@ public:
 	ze_result_t listGpus(devInfo *d);
 	ze_result_t stats(devInfo *d);
 	int run(arg_struct *args);
+
+protected:
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 using vgpuSubCmdFunc = ze_result_t (cmdVgpu::*)(devInfo *d);

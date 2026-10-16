@@ -5,7 +5,6 @@
  */
 
 #include <os.h>
-#include "privilege.h"
 #include "process_platform.h"
 #include <algorithm>
 #include <array>
@@ -222,16 +221,6 @@ void wait_for_thread(thread_id *tid)
 		delete tid; // Clean up the thread_id object after waiting
 	}
 }
-
-/**
- * @brief Checks if the current user has privilege to access XPUM resources
- *
- * Thin wrapper over currentPrivileges(); true for root or members of the
- * 'xpum' group.
- *
- * @return bool True if user has privileges, false otherwise
- */
-bool privilegeCheck() { return hasAll(currentPrivileges(), Capability::Admin); }
 
 /**
  * @brief Retrieves the process name for a given process ID

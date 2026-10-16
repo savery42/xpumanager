@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include "utility/compat/format.h"
+#include <array>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -139,12 +140,6 @@ ze_result_t cmdVgpu::create(devInfo *d)
 {
 	TRACING();
 
-	// Check for elevated privileges early
-	if (!PRIVILEGECHECK()) {														 // NOLINT(misc-include-cleaner)
-		ERR("Creating virtual GPUs requires elevated privileges. Run with sudo.\n"); // NOLINT(misc-include-cleaner)
-		return ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;							 // NOLINT(misc-include-cleaner)
-	}
-
 	ze_result_t result = ZE_RESULT_SUCCESS;
 	DeviceSriovInfo deviceInfo = {};
 	zes_device_ecc_properties_t eccState = {};
@@ -224,12 +219,6 @@ ze_result_t cmdVgpu::create(devInfo *d)
 ze_result_t cmdVgpu::remove(devInfo *d) // NOLINT(readability-convert-member-functions-to-static)
 {
 	TRACING();
-
-	// Check for elevated privileges early
-	if (!PRIVILEGECHECK()) {														 // NOLINT(misc-include-cleaner)
-		ERR("Removing virtual GPUs requires elevated privileges. Run with sudo.\n"); // NOLINT(misc-include-cleaner)
-		return ZE_RESULT_ERROR_INSUFFICIENT_PERMISSIONS;							 // NOLINT(misc-include-cleaner)
-	}
 
 	int result = 0;
 	DeviceSriovInfo deviceInfo = {};
@@ -363,13 +352,6 @@ ze_result_t cmdVgpu::stats(devInfo *d)
 		return ZE_RESULT_SUCCESS;
 	}
 
-	// If all VFs show N/A for engine utilization, hint about privileges
-	const bool allEngineNA = std::all_of(vfStatsList.begin(), vfStatsList.end(),
-										 [](const VFStatsInfo &s) { return s.gpuUtilization < 0.0; });
-	if (allEngineNA && !PRIVILEGECHECK()) {
-		ERR("Engine utilization requires elevated privileges. Run with sudo for full stats.\n");
-	}
-
 	for (const auto &vfStats : vfStatsList) {
 		static constexpr std::size_t bdfStringSize = 16; // "DDDD:BB:DD.F" max length
 		char vfBdf
@@ -415,6 +397,66 @@ ze_result_t cmdVgpu::stats(devInfo *d)
 	return ZE_RESULT_SUCCESS;
 }
 
+namespace {
+
+using VgpuCmdMap = std::unordered_map<vgpuCmdType, vgpuCmdStruct>;
+
+// VF engine utilization is read through a system-wide GPU PMU (perf_event_open).
+constexpr std::array VGPU_STATS_FEATURES{OptionalFeature{"VF engine utilization", Capability::PerfEvents}};
+
+/// Clears @p cmds and declares vgpu's options on @p sub, bound into it. run() and needs() share it.
+void declareOptions(CLI::App &sub, VgpuCmdMap &cmds)
+{
+	for (auto &[k, v] : cmds) {
+		v.enabled = false;
+		v.val.clear();
+	}
+	sub.set_help_flag("-h,--help", "Print this help message and exit");
+	sub.add_flag("-j,--json", cmds[VGPU_JSON].enabled, "Print result in JSON format");
+	sub.add_option("-d,--device,--id", cmds[VGPU_DEVICE].val,
+				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
+		->each([&cmds](const std::string &) { cmds[VGPU_DEVICE].enabled = true; });
+	sub.add_flag("--precheck,--query", cmds[VGPU_PRECHECK].enabled, "Check vGPU readiness");
+	sub.add_option("-n,--number", cmds[VGPU_NUMBER].val, "Number of vGPUs to create")
+		->each([&cmds](const std::string &) { cmds[VGPU_NUMBER].enabled = true; });
+	sub.add_flag("-c,--create", cmds[VGPU_CREATE].enabled, "Create vGPUs");
+	sub.add_flag("-r,--remove", cmds[VGPU_REMOVE].enabled, "Remove vGPUs");
+	sub.add_flag("-l,--list,--supported", cmds[VGPU_LIST].enabled, "List vGPUs");
+	sub.add_flag("-s,--stats,--utilization", cmds[VGPU_STATS].enabled, "Show vGPU stats");
+	sub.add_option("--lmem", cmds[VGPU_LMEM].val, "Local memory size per vGPU (MB)")
+		->each([&cmds](const std::string &) { cmds[VGPU_LMEM].enabled = true; });
+}
+
+} // namespace
+
+/**
+ * @brief Creating or removing VFs needs Admin; VF engine utilization needs PerfEvents.
+ *
+ * @param[in] cmdArgs  argv tokens after the subcommand name.
+ *
+ * @retval {.driver = DriverMode::None}      @p cmdArgs does not parse; run() reports why.
+ * @retval {.required = Capability::Admin}   --create or --remove.
+ * @retval {.optional = VF engine util}      --stats.
+ * @retval {}                                Otherwise.
+ */
+CommandPlan cmdVgpu::needs(std::span<char *const> cmdArgs) const
+{
+	VgpuCmdMap parsed = vgpuCmds;
+	CLI::App sub;
+	declareOptions(sub, parsed);
+	if (!parsesCleanly(sub, cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	CommandPlan plan;
+	if (parsed[VGPU_CREATE].enabled || parsed[VGPU_REMOVE].enabled) {
+		plan.required = Capability::Admin;
+	}
+	if (parsed[VGPU_STATS].enabled) {
+		plan.optional = VGPU_STATS_FEATURES;
+	}
+	return plan;
+}
+
 /**
  * @brief Executes the vgpu run.
  *
@@ -426,27 +468,8 @@ int cmdVgpu::run(arg_struct *args)
 	std::vector<devInfo> deviceList;
 	ze_result_t result;
 
-	// Reset state
-	for (auto &[k, v] : vgpuCmds) {
-		v.enabled = false;
-		v.val.clear();
-	}
-
 	CLI::App sub{"Manage virtual GPUs (vGPU)", "vgpu"};
-	sub.set_help_flag("-h,--help", "Print this help message and exit");
-	sub.add_flag("-j,--json", vgpuCmds[VGPU_JSON].enabled, "Print result in JSON format");
-	sub.add_option("-d,--device,--id", vgpuCmds[VGPU_DEVICE].val,
-				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
-		->each([&](const std::string &) { vgpuCmds[VGPU_DEVICE].enabled = true; });
-	sub.add_flag("--precheck,--query", vgpuCmds[VGPU_PRECHECK].enabled, "Check vGPU readiness");
-	sub.add_option("-n,--number", vgpuCmds[VGPU_NUMBER].val, "Number of vGPUs to create")
-		->each([&](const std::string &) { vgpuCmds[VGPU_NUMBER].enabled = true; });
-	sub.add_flag("-c,--create", vgpuCmds[VGPU_CREATE].enabled, "Create vGPUs");
-	sub.add_flag("-r,--remove", vgpuCmds[VGPU_REMOVE].enabled, "Remove vGPUs");
-	sub.add_flag("-l,--list,--supported", vgpuCmds[VGPU_LIST].enabled, "List vGPUs");
-	sub.add_flag("-s,--stats,--utilization", vgpuCmds[VGPU_STATS].enabled, "Show vGPU stats");
-	sub.add_option("--lmem", vgpuCmds[VGPU_LMEM].val, "Local memory size per vGPU (MB)")
-		->each([&](const std::string &) { vgpuCmds[VGPU_LMEM].enabled = true; });
+	declareOptions(sub, vgpuCmds);
 
 	try {
 		sub.parse(args->argc - 1, args->argv + 1);

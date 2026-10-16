@@ -1390,12 +1390,12 @@ void cmdQuery::help(HELP helpType)
  *
  * @param[in] cmdArgs argv tokens after the subcommand name.
  *
- * @retval DriverMode::None `query help`.
- * @retval DriverMode::Full Otherwise.
+ * @retval {.driver = DriverMode::None} `query help`.
+ * @retval {.driver = DriverMode::Full} Otherwise.
  */
-DriverMode cmdQuery::driverMode(std::span<char *const> cmdArgs) const
+CommandPlan cmdQuery::needs(std::span<char *const> cmdArgs) const
 {
-	return printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full;
+	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
 }
 
 std::variant<QueryOptions, int> cmdQuery::parseOptions(arg_struct *args)

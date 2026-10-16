@@ -53,7 +53,7 @@ public:
 	static const char *verbForAction(Action action);
 
 protected:
-	[[nodiscard]] DriverMode driverMode(std::span<char *const> cmdArgs) const override;
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 #endif

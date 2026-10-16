@@ -62,7 +62,8 @@ struct arg_struct
 {
 	int argc;
 	char **argv;
-	driver sm; // sm is short for sysman
+	driver sm;						   // sm is short for sysman
+	Capability held{Capability::NONE}; // resolved once in main(), before driver init
 };
 
 /// argv tokens after the subcommand name, i.e. argv[2..argc).
@@ -86,13 +87,26 @@ public:
 	void printHelp(std::vector<helpCmd> helpList, HELP helpType = FULL_HELP);
 	virtual void help(HELP helpType = FULL_HELP) = 0;
 	virtual int run(arg_struct *args) = 0;
-	[[nodiscard]] DriverMode requiredDriver(std::span<char *const> cmdArgs) const;
+	/**
+	 * @brief What the dispatcher must check and bring up before run().
+	 *
+	 * Non-virtual so that -h/--help never needs privilege or the driver.
+	 */
+	[[nodiscard]] CommandPlan plan(std::span<char *const> cmdArgs) const;
 	/// Whether run() can still act when the driver fails to initialize. Default: no.
 	[[nodiscard]] virtual bool recoversWithoutDriver(std::span<char *const> cmdArgs) const;
 
 protected:
-	[[nodiscard]] virtual DriverMode driverMode(std::span<char *const> cmdArgs) const;
+	/// Override to declare what this command needs. Default: the full driver, no privilege.
+	[[nodiscard]] virtual CommandPlan needs(std::span<char *const> cmdArgs) const;
 };
+
+namespace CLI {
+class App;
+} // namespace CLI
+
+/// Parses @p cmdArgs with @p app without printing; false on a parse error or help request.
+[[nodiscard]] bool parsesCleanly(CLI::App &app, std::span<char *const> cmdArgs);
 
 typedef void (cmds::*helpFunc)(HELP helpType);
 typedef int (cmds::*runFunc)();

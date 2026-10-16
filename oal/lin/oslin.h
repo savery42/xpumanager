@@ -41,7 +41,6 @@
 #define GETOPT_LONG getopt_long
 #define GETGFXFWSTATUS(meiPath) getGfxFwStatus(meiPath)
 #define GETPCHPRODSTATE(meiPath) getPchProdState(meiPath)
-#define PRIVILEGECHECK() privilegeCheck()
 #define ZERO_MEM(mem, size) memset(mem, 0, size)
 #define SETENV(name, value) setenv(name, value, 1)
 #define MSLEEP(ms) usleep(ms * 1000) // Convert milliseconds to microseconds
@@ -117,7 +116,6 @@ public:
 
 thread_id *create_thread(funcptr thread, void *args);
 void wait_for_thread(thread_id *tid);
-bool privilegeCheck();
 char getch();
 void restoreTerminal();
 std::string getLocalCpus(const std::string &bdf);

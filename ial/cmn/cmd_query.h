@@ -243,7 +243,7 @@ public:
 	[[nodiscard]] static std::variant<QueryOptions, int> parseOptions(arg_struct *args);
 
 protected:
-	[[nodiscard]] DriverMode driverMode(std::span<char *const> cmdArgs) const override;
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 #endif // _CMD_QUERY_H

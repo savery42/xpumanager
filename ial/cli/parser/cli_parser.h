@@ -9,6 +9,8 @@
 #include "../cli.h"
 #include <debug.h>
 #include <algorithm>
+#include <concepts>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -23,6 +25,45 @@ std::vector<function_entry> defaultCommandTable();
 [[nodiscard]] std::optional<int> requireDriver(arg_struct *arg, DriverMode mode, bool recoverable = false);
 
 template <typename T> std::unique_ptr<cmds> createInstance() { return std::make_unique<T>(); }
+
+/**
+ * @brief Runs @p body once @p plan is admitted for the user and its driver is up.
+ *
+ * The one path every invocation takes, subcommand or top-level form. A missing
+ * required capability is refused before any driver call. Each skipped optional
+ * feature gets one notice after @p body has printed its output and restored
+ * the normal screen.
+ *
+ * @param[in,out] args     Holds the privileges in effect; receives the driver.
+ * @param[in]     command  Name used in diagnostics, e.g. "vgpu" or "--query-gpu".
+ * @param[in]     plan     What the invocation needs.
+ * @param[in]     body     Runs the command.
+ * @param[in]     recoverable  @p body can act without the driver (see cmds::recoversWithoutDriver()),
+ *                             so a driver init failure does not end the command.
+ *
+ * @retval 1       A required capability is missing; the error has been printed.
+ * @retval -1      The driver failed to initialize and @p recoverable is false.
+ * @retval body()  Otherwise.
+ */
+template <std::invocable Body>
+[[nodiscard]] int runPlanned(arg_struct *args, std::string_view command, const CommandPlan &plan, Body &&body,
+							 bool recoverable = false)
+{
+	const Resolution admitted = resolve(plan, args->held);
+	if (!admitted.permitted()) {
+		ERR("{} requires {}. Re-run with sudo.\n", command, describeAll(admitted.missing));
+		return 1;
+	}
+	if (auto rc = requireDriver(args, admitted.driver, recoverable); rc.has_value()) {
+		return *rc;
+	}
+	const int rc = std::invoke(std::forward<Body>(body));
+	for (const OptionalFeature &f : admitted.skipped | std::views::filter(&OptionalFeature::announce)) {
+		INFO("{}: {} omitted: needs {}. Re-run with sudo for the full output.\n", command, f.name,
+			 describeAll(f.capability));
+	}
+	return rc;
+}
 
 // ---- CliParser concept --------------------------------------------------
 // Defines the minimal interface each CLI parser variant must satisfy.
@@ -109,13 +150,11 @@ template <CliParser P> int runCli(P &parser, arg_struct *args, OSTYPE currentOS)
 
 	if (auto match = dispatchMap.find(subcmd); match != dispatchMap.end()) {
 		cmds &cmd = *match->second;
-		const auto cmdArgs = subcommandArgs(*args);
-		if (auto rc = requireDriver(args, cmd.requiredDriver(cmdArgs), cmd.recoversWithoutDriver(cmdArgs));
-			rc.has_value()) {
-			return *rc;
-		}
 		// A known subcommand ran but failed: rc 1 (runtime/command error).
-		return (cmd.run(args) != 0) ? 1 : 0;
+		const auto cmdArgs = subcommandArgs(*args);
+		return runPlanned(
+			args, cmd.getName(), cmd.plan(cmdArgs), [&] { return (cmd.run(args) != 0) ? 1 : 0; },
+			cmd.recoversWithoutDriver(cmdArgs));
 	}
 
 	// Unknown subcommand — emit a clear diagnostic, then show the full help so

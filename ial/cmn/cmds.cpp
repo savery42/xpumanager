@@ -5,6 +5,7 @@
  */
 
 #include "cmds.h"
+#include <CLI/CLI.hpp>
 #include <algorithm>
 #include <string_view>
 
@@ -44,29 +45,54 @@ namespace {
 } // namespace
 
 /**
- * @brief Reports how much of Level Zero the dispatcher must initialize before run().
+ * @brief Reports what the dispatcher must check and bring up before run().
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::None     @p cmdArgs contains -h or --help.
- * @retval driverMode(cmdArgs)  Otherwise.
+ * @retval {.driver = DriverMode::None}  @p cmdArgs contains -h or --help.
+ * @retval needs(cmdArgs)                Otherwise.
  */
-DriverMode cmds::requiredDriver(std::span<char *const> cmdArgs) const
+CommandPlan cmds::plan(std::span<char *const> cmdArgs) const
 {
-	return requestsHelp(cmdArgs) ? DriverMode::None : driverMode(cmdArgs);
+	return requestsHelp(cmdArgs) ? CommandPlan{.driver = DriverMode::None} : needs(cmdArgs);
 }
 
 /**
- * @brief Reports how much of Level Zero this command needs for @p cmdArgs.
+ * @brief Reports what this command needs for @p cmdArgs.
  *
  * Only called when @p cmdArgs has no -h/--help. A command that prints help for
  * other forms, such as a bare invocation, returns DriverMode::None for them.
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval DriverMode::Full  Default for every command that queries devices.
+ * @retval {.driver = DriverMode::Full}  Default for every command that queries devices.
  */
-DriverMode cmds::driverMode(UNUSED std::span<char *const> cmdArgs) const { return DriverMode::Full; }
+CommandPlan cmds::needs(UNUSED std::span<char *const> cmdArgs) const { return {}; }
+
+/**
+ * @brief Parses @p cmdArgs with @p app, printing nothing.
+ *
+ * Lets needs() read the options a command declares for run() from the same
+ * CLI11 declaration, so the two cannot disagree about a flag's spelling.
+ *
+ * @param[in,out] app      Options declared exactly as run() declares them.
+ * @param[in]     cmdArgs  argv tokens after the subcommand name.
+ *
+ * @retval true   The arguments parsed; @p app's bound variables hold them.
+ * @retval false  A parse error or a help request, both of which run() reports
+ *                before it touches a device.
+ */
+bool parsesCleanly(CLI::App &app, std::span<char *const> cmdArgs)
+{
+	// CLI11's vector form takes the arguments in reverse order.
+	std::vector<std::string> reversed(cmdArgs.rbegin(), cmdArgs.rend());
+	try {
+		app.parse(reversed);
+	} catch (const CLI::Error &) {
+		return false;
+	}
+	return true;
+}
 
 /**
  * @brief Reports whether run() can still act on @p cmdArgs when the driver fails to initialize.

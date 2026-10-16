@@ -14,6 +14,6 @@ bool canReadWrite(UNUSED const std::string &path) noexcept { return true; }
 
 Capability currentPrivileges()
 {
-	// Matches the historical PRIVILEGECHECK() == true on Windows.
+	// No equivalent split on Windows: every command was always permitted.
 	return Capability::ALL;
 }
