@@ -14,6 +14,7 @@
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -161,6 +162,13 @@ const std::unordered_map<int, std::string_view> LEGACY_METRIC_NAMES = {
 	{39, "temperature.composite"},				  // GPU Composite Temperature (C)
 };
 
+/// A --metrics value with legacy numeric IDs replaced by field names.
+struct TranslatedQuery
+{
+	std::string query;			  ///< For metrics::resolveQuery()
+	std::vector<int> unsupported; ///< Legacy IDs with no field, dropped from @c query
+};
+
 /**
  * @brief Translate a user-supplied metric query string into canonical registry field names.
  *
@@ -172,15 +180,15 @@ const std::unordered_map<int, std::string_view> LEGACY_METRIC_NAMES = {
  * Single/multi-character shortcuts follow the registry's GROUP_TABLE:
  *  @c p = POWER+TEMPERATURE, @c u = UTILIZATION, @c t = PCI, etc.
  *
- * Unsupported legacy IDs produce an error log entry and are silently dropped.
+ * Unsupported legacy IDs are dropped and returned for the caller to report.
  *
  * @param[in] query  Comma-separated metric query string supplied by the user.
- * @return           Translated comma-separated query string suitable for metrics::resolveQuery().
- *                   Returns an empty string if all tokens were invalid or the input was empty.
+ * @return           The translated query, suitable for metrics::resolveQuery() and empty if
+ *                   every token was dropped, plus the unsupported legacy IDs.
  */
-std::string translateMetricQuery(const std::string &query)
+TranslatedQuery translateMetricQuery(const std::string &query)
 {
-	std::string result;
+	TranslatedQuery result;
 	for (auto &&rng : std::string_view{query} | std::views::split(',')) {
 		std::string_view sv{rng.begin(), rng.end()};
 		const auto b = sv.find_first_not_of(" \t");
@@ -193,7 +201,7 @@ std::string translateMetricQuery(const std::string &query)
 		if (const auto n = parseInteger<int>(sv); n.has_value()) {
 			const auto it = LEGACY_METRIC_NAMES.find(*n);
 			if (it == LEGACY_METRIC_NAMES.end()) {
-				ERR("Legacy metric {} is not supported; skipping.\n", *n);
+				result.unsupported.push_back(*n);
 				continue;
 			}
 			token = it->second;
@@ -201,10 +209,10 @@ std::string translateMetricQuery(const std::string &query)
 			token = std::string{sv}; // group names, shortcuts, and multi-char combos handled by resolveQuery
 		}
 
-		if (!result.empty()) {
-			result += ',';
+		if (!result.query.empty()) {
+			result.query += ',';
 		}
-		result += token;
+		result.query += token;
 	}
 	return result;
 }
@@ -319,7 +327,10 @@ struct SamplingTiming
  */
 std::vector<const metrics::QueryMetric *> resolveMetricsArg(const std::string &metricsArg)
 {
-	const std::string translated = translateMetricQuery(metricsArg);
+	const auto [translated, unsupported] = translateMetricQuery(metricsArg);
+	for (const int id : unsupported) {
+		ERR("Legacy metric {} is not supported; skipping.\n", id);
+	}
 	if (translated.empty()) {
 		return {};
 	}
@@ -404,26 +415,25 @@ struct ParsedArgs
 	std::optional<std::string> loopMs;
 };
 
+/// Parsing stopped without options: a help request, or a CLI11 error to report.
+struct ParseStopped
+{
+	std::optional<std::string> error; ///< nullopt: help was requested
+};
+
 /**
- * @brief Parse the @c dump / @c dmon command-line arguments using CLI11.
+ * @brief Parse the @c dump / @c dmon arguments with CLI11, printing nothing.
  *
- * Handles special cases before handing off to CLI11:
- *  - Bare @c "help" keyword (e.g. @c "xpu-smi dump help"): calls @p showHelp and returns 0.
- *  - @c --loop-ms (multi-character flag pre-extracted before CLI11 parsing): stored in
- *    ParsedArgs::loopMs.
+ * run() and needs() both parse through here, so the plan reads exactly the
+ * options run() acts on. @c --loop-ms is pre-extracted before CLI11 parsing,
+ * to avoid ambiguity with @c --loop, and stored in ParsedArgs::loopMs.
  *
- * @param[in] cmdName   The canonical command name (@c "dump" or @c "dmon"), used as the
- *                      CLI11 app name for error messages.
- * @param[in] showHelp  Callable invoked to display help text on @c -h / @c --help or the
- *                      bare @c "help" keyword.
- * @param[in] args      Raw argument vector from the command dispatcher.
- * @retval std::variant<ParsedArgs, int>
- *         - ParsedArgs                           on a successful parse.
- *         - int (ZE_RESULT_SUCCESS)              when help was displayed.
- *         - int (ZE_RESULT_ERROR_INVALID_ARGUMENT) on a CLI11 parse error.
+ * @param[in] cmdName  The canonical command name, used as the CLI11 app name.
+ * @param[in] cmdArgs  argv tokens after the subcommand name.
+ * @retval ParsedArgs    On a successful parse.
+ * @retval ParseStopped  On -h / --help, or a CLI11 parse error.
  */
-std::variant<ParsedArgs, int> parseDumpCLI(std::string_view cmdName, const std::function<void()> &showHelp,
-										   arg_struct *args)
+std::variant<ParsedArgs, ParseStopped> parseDumpArgs(std::string_view cmdName, std::span<char *const> cmdArgs)
 {
 	ParsedArgs parsed;
 
@@ -441,43 +451,17 @@ std::variant<ParsedArgs, int> parseDumpCLI(std::string_view cmdName, const std::
 	std::string formatStr;
 	sub.add_option("--format", formatStr, "Output format: [csv][,noheader][,nounits]");
 
-	// Skip command name (argv[1]) if it matches "dump" or "dmon" (our primary or alias name)
-	int argStart = 1;
-	if (args->argc > 1) {
-		std::string_view const cmd{args->argv[1]};
-		if (cmd == "dump" || cmd == "dmon") {
-			argStart = 2;
-		}
-	}
-
-	// Handle bare "help" keyword (e.g., "xpu-smi dump help" or "xpu-smi dmon help")
-	if (args->argc == argStart + 1) {
-		std::string_view const lastArg{args->argv[argStart]};
-		if (lastArg == "help") {
-			showHelp();
-			return static_cast<int>(ZE_RESULT_SUCCESS);
-		}
-	}
-
-	// Pre-extract and filter --loop-ms before CLI11 to avoid ambiguity with --loop
-	auto [filteredArgs, loopMsValue] =
-		filterArgvAndExtract(std::span{args->argv + 1, static_cast<std::size_t>(args->argc - 1)}, "", "--loop-ms");
+	auto [filteredArgs, loopMsValue] = filterArgvAndExtract(cmdArgs, "", "--loop-ms");
 	parsed.loopMs = loopMsValue;
 
-	// Build argv pointers for CLI11 parsing (must use stable storage)
-	std::vector<char *> filteredArgv;
-	for (auto &arg : filteredArgs) {
-		filteredArgv.push_back(arg.data());
-	}
-
+	// CLI11's vector form takes the arguments in reverse order.
+	std::ranges::reverse(filteredArgs);
 	try {
-		sub.parse(static_cast<int>(filteredArgv.size()), filteredArgv.data());
+		sub.parse(filteredArgs);
 	} catch (const CLI::CallForHelp &) {
-		showHelp();
-		return static_cast<int>(ZE_RESULT_SUCCESS);
+		return ParseStopped{};
 	} catch (const CLI::ParseError &e) {
-		ERR("{}\n", e.what());
-		return static_cast<int>(ZE_RESULT_ERROR_INVALID_ARGUMENT);
+		return ParseStopped{e.what()};
 	}
 
 	if (parsed.opts.device == "-1") {
@@ -496,6 +480,32 @@ std::variant<ParsedArgs, int> parseDumpCLI(std::string_view cmdName, const std::
 	}
 
 	return parsed;
+}
+
+/**
+ * @brief parseDumpArgs(), reporting a stop: help is shown, an error is logged.
+ *
+ * @param[in] cmdName   The canonical command name (@c "dump" or @c "dmon").
+ * @param[in] showHelp  Callable invoked to display help text on @c -h / @c --help.
+ * @param[in] args      Raw argument vector from the command dispatcher.
+ * @retval std::variant<ParsedArgs, int>
+ *         - ParsedArgs                           on a successful parse.
+ *         - int (ZE_RESULT_SUCCESS)              when help was displayed.
+ *         - int (ZE_RESULT_ERROR_INVALID_ARGUMENT) on a CLI11 parse error.
+ */
+std::variant<ParsedArgs, int> parseDumpCLI(std::string_view cmdName, const std::function<void()> &showHelp,
+										   arg_struct *args)
+{
+	auto parsed = parseDumpArgs(cmdName, subcommandArgs(*args));
+	if (const auto *stopped = std::get_if<ParseStopped>(&parsed)) {
+		if (!stopped->error) {
+			showHelp();
+			return static_cast<int>(ZE_RESULT_SUCCESS);
+		}
+		ERR("{}\n", *stopped->error);
+		return static_cast<int>(ZE_RESULT_ERROR_INVALID_ARGUMENT);
+	}
+	return std::get<ParsedArgs>(std::move(parsed));
 }
 
 /**
@@ -1018,6 +1028,14 @@ void printSelectorGuidance(QuerySelector selector)
 	}
 }
 
+// EU metrics are a query's only metric-streamer (zet) consumer. eu.* fields read nothing else;
+// utilization.gpu prefers EU but falls back to engine counters, so skipping it needs no notice.
+constexpr std::array EU_FIELD_FEATURES{OptionalFeature{"EU fields", Capability::PerfObserve, DriverMode::Full}};
+constexpr std::array EU_PREFERRED_FEATURES{OptionalFeature{.name = "EU-based utilization",
+														   .capability = Capability::PerfObserve,
+														   .driver = DriverMode::Full,
+														   .announce = false}};
+
 // `dump` and `dump help` print help without touching a device;
 // run() and needs() both use this so they cannot disagree.
 [[nodiscard]] bool printsHelpOnly(std::span<char *const> cmdArgs)
@@ -1232,16 +1250,60 @@ void cmdDump::help(HELP helpType)
 }
 
 /**
- * @brief `dump` and `dump help` only print help; sampling resolves devices.
+ * @brief What a query over @p fields needs.
+ *
+ * Every field is served by sysman alone; selected EU fields are an optional
+ * PerfObserve feature that raises the driver to Full. A skipped eu.* field is
+ * omitted and announced; utilization.gpu falls back silently.
+ *
+ * @param[in] fields  Resolved metrics.
+ *
+ * @retval {.driver = DriverMode::None}        @p fields is empty; the caller rejects the query first.
+ * @retval {.driver = DriverMode::SysmanOnly}  Otherwise, with the EU feature when selected.
+ */
+CommandPlan cmdDump::queryPlan(std::span<const metrics::QueryMetric *const> fields)
+{
+	if (fields.empty()) {
+		return {.driver = DriverMode::None};
+	}
+	CommandPlan plan{.driver = DriverMode::SysmanOnly};
+	if (std::ranges::any_of(fields,
+							[](const metrics::QueryMetric *f) { return f->inputs == metrics::MetricInput::EU; })) {
+		plan.optional = EU_FIELD_FEATURES;
+	} else if (metrics::hasInput(metrics::inputsOf(fields), metrics::MetricInput::EU)) {
+		plan.optional = EU_PREFERRED_FEATURES;
+	}
+	return plan;
+}
+
+/**
+ * @brief The plan for a top-level --query-gpu or --display value.
+ *
+ * @param[in] query  Field or section names, as runQuery() takes them.
+ * @return queryPlan() of the resolved fields.
+ */
+CommandPlan cmdDump::queryPlan(const std::string &query) { return queryPlan(metrics::resolveQuery(query)); }
+
+/**
+ * @brief The selected fields decide; `dump` and `dump help` only print help.
  *
  * @param[in] cmdArgs  argv tokens after the subcommand name.
  *
- * @retval {.driver = DriverMode::None}  @p cmdArgs is empty or the bare `help` keyword.
- * @retval {.driver = DriverMode::Full}  Otherwise.
+ * @retval {.driver = DriverMode::None}  Help, no --metrics, or arguments run() rejects
+ *                                       before touching a device.
+ * @retval queryPlan(fields)             Otherwise.
  */
 CommandPlan cmdDump::needs(std::span<char *const> cmdArgs) const
 {
-	return {.driver = printsHelpOnly(cmdArgs) ? DriverMode::None : DriverMode::Full};
+	if (printsHelpOnly(cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	const auto parsed = parseDumpArgs(name, cmdArgs);
+	const auto *args = std::get_if<ParsedArgs>(&parsed);
+	if (args == nullptr || !args->opts.metrics) {
+		return {.driver = DriverMode::None};
+	}
+	return queryPlan(metrics::resolveQuery(translateMetricQuery(*args->opts.metrics).query));
 }
 
 // -- run

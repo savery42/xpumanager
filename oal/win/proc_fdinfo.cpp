@@ -52,4 +52,8 @@ std::unordered_map<std::string, uint32_t> engineCountsPerClass(const std::string
 	return {};
 }
 
+RegisteredClient::RegisteredClient(const std::string & /*pciAddr*/) {}
+
+RegisteredClient::~RegisteredClient() = default;
+
 } // namespace fdinfo

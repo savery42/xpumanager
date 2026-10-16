@@ -452,7 +452,7 @@ std::optional<int> DefaultParser::handleTopLevel(arg_struct *args, const std::ve
 			selector = pre.displayFlag == "--metrics" ? QuerySelector::Metrics : QuerySelector::Display;
 		}
 		const std::string_view queryFlag = fromDisplay ? pre.displayFlag : std::string_view{"--query-gpu"};
-		return runPlanned(args, queryFlag, CommandPlan{}, [&] {
+		return runPlanned(args, queryFlag, cmdDump::queryPlan(effectiveQuery), [&] {
 			return cmdDump::runQuery(effectiveQuery, pre.deviceSpec, args, buildQueryFormat(pre, formatStr), selector);
 		});
 	}

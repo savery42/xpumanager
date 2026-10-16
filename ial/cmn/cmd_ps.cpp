@@ -13,6 +13,7 @@
 #include <sysprocess.h>
 #include <metric.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <future>
 #include <numeric>
@@ -402,6 +403,23 @@ static std::optional<EuMetricsData> collectEuMetrics(const devInfo &dev)
 	agg.euStall /= n;
 	agg.euIdle /= n;
 	return agg;
+}
+
+namespace {
+// EU metrics are ps's only compute-runtime (zet) consumer, so they alone raise the driver to Full.
+constexpr std::array PS_FEATURES{OptionalFeature{"EU active/stall columns", Capability::PerfObserve, DriverMode::Full}};
+} // namespace
+
+/**
+ * @brief ps is sysman-only unless the EU columns are available.
+ *
+ * @param[in] cmdArgs  argv tokens after the subcommand name (unused).
+ *
+ * @retval {.driver = DriverMode::SysmanOnly, .optional = EU columns}  Always.
+ */
+CommandPlan cmdPs::needs(UNUSED std::span<char *const> cmdArgs) const
+{
+	return {.driver = DriverMode::SysmanOnly, .optional = PS_FEATURES};
 }
 
 /**

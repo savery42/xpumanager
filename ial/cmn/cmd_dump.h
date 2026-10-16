@@ -16,6 +16,10 @@
 #include <string_view>
 #include <vector>
 
+namespace metrics {
+struct QueryMetric;
+} // namespace metrics
+
 constexpr auto DEFAULT_INTERVAL = std::chrono::seconds{1};
 constexpr auto MAX_INTERVAL = std::chrono::seconds{20};
 // Maximum duration for time-based dump operations (100 million seconds, approximately 3.17 years)
@@ -109,6 +113,11 @@ public:
 
 	// prints all available --query-gpu fields with descriptions
 	static void printQueryHelp();
+
+	/// What a query over @p fields needs: sysman, plus the compute runtime for available EU fields.
+	[[nodiscard]] static CommandPlan queryPlan(std::span<const metrics::QueryMetric *const> fields);
+	/// queryPlan() of a top-level --query-gpu / --display value.
+	[[nodiscard]] static CommandPlan queryPlan(const std::string &query);
 
 protected:
 	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;

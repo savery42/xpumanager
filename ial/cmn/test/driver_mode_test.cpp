@@ -22,6 +22,8 @@ std::string progName = "test";
 #include "cmd_health.h"
 #include "cmd_listpciinfo.h"
 #include "cmd_log.h"
+#include "cmd_ps.h"
+#include "cmd_stats.h"
 #include "cmd_topology.h"
 #include "cmd_vgpu.h"
 
@@ -83,8 +85,7 @@ TEST_SUITE("cmds::plan driver")
 
 	TEST_CASE("the same commands need the driver once they have work to do")
 	{
-		CHECK(cmdDump{}.plan(Argv{"-d", "0", "--metrics", "0"}.view()).driver == DriverMode::Full);
-		CHECK(cmdDump{}.plan(Argv{"-d", "0", "help"}.view()).driver == DriverMode::Full);
+		CHECK(cmdDump{}.plan(Argv{"-d", "0", "--metrics", "name"}.view()).driver == DriverMode::SysmanOnly);
 		CHECK(cmdHealth{}.plan(Argv{"-d", "0"}.view()).driver == DriverMode::Full);
 		CHECK(cmdCrashlog{}.plan(Argv{"--extract", "-d", "0"}.view()).driver == DriverMode::Full);
 		CHECK(cmdTopology{}.plan(Argv{"-m"}.view()).driver == DriverMode::Full);
@@ -179,5 +180,75 @@ TEST_SUITE("cmds::plan privilege")
 		CHECK_FALSE(config.recoversWithoutDriver(Argv{"-d", "0"}.view()));
 		CHECK_FALSE(config.recoversWithoutDriver(Argv{"-d", "0", "--resetfrequencyrange"}.view()));
 		CHECK_FALSE(cmdDiscovery{}.recoversWithoutDriver(Argv{"-d", "0000:03:00.0"}.view()));
+	}
+
+	TEST_CASE("dump: every field is served by sysman")
+	{
+		const cmdDump dump;
+		for (const char *fields :
+			 {"name", "uuid", "driver_version", "pci.device_id", "IDENTITY", "power.draw", "1", "eu.active"}) {
+			CAPTURE(fields);
+			CHECK(dump.plan(Argv{"--metrics", fields}.view()).driver == DriverMode::SysmanOnly);
+		}
+		CHECK(dump.plan(Argv{"--metrics=uuid", "--loop-ms", "50"}.view()).driver == DriverMode::SysmanOnly);
+	}
+
+	TEST_CASE("dump: forms run() rejects before touching a device need no driver")
+	{
+		const cmdDump dump;
+		CHECK(dump.plan(Argv{"-d", "0"}.view()).driver == DriverMode::None);			  // help: no --metrics
+		CHECK(dump.plan(Argv{"--metrics", "no.such"}.view()).driver == DriverMode::None); // unresolved
+		CHECK(dump.plan(Argv{"--metrics"}.view()).driver == DriverMode::None);			  // parse error
+		CHECK(dump.plan(Argv{"-d", "0", "help"}.view()).driver == DriverMode::None);
+	}
+
+	TEST_CASE("top-level queries use the same field-derived plan")
+	{
+		CHECK(cmdDump::queryPlan("name,power.draw").driver == DriverMode::SysmanOnly);
+		CHECK(cmdDump::queryPlan("no.such").driver == DriverMode::None);
+		CHECK(cmdDump::queryPlan("eu.stall").optional.size() == 1);
+		CHECK(cmdDump::queryPlan("eu.stall").optional.front().announce);
+		// utilization.gpu reads the busiest engine, not the EU array, so it needs no EU feature.
+		CHECK(cmdDump::queryPlan("utilization.gpu").driver == DriverMode::SysmanOnly);
+		CHECK(cmdDump::queryPlan("utilization.gpu").optional.empty());
+		CHECK(cmdDump::queryPlan("utilization.gpu,eu.active").optional.front().announce);
+	}
+
+	TEST_CASE("ps and stats are sysman-only at baseline")
+	{
+		CHECK(cmdPs{}.plan(Argv{}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdStats{}.plan(Argv{"-d", "0"}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdStats{}.plan(Argv{"-d", "0", "--bogus"}.view()).driver == DriverMode::None);
+	}
+}
+
+TEST_SUITE("cmds::plan EU")
+{
+	TEST_CASE("ps, stats and dump declare EU as an optional PerfObserve feature that needs Full")
+	{
+		const auto onlyEu = [](const CommandPlan &plan) {
+			return plan.required == Capability::NONE && plan.optional.size() == 1 &&
+				   plan.optional.front().capability == Capability::PerfObserve &&
+				   plan.optional.front().driver == DriverMode::Full;
+		};
+		CHECK(onlyEu(cmdPs{}.plan(Argv{}.view())));
+		for (const char *eu : {"--eu", "-e", "-je", "--eu=true"}) {
+			CAPTURE(eu);
+			CHECK(onlyEu(cmdStats{}.plan(Argv{"-d", "0", eu}.view())));
+		}
+		CHECK(cmdStats{}.plan(Argv{"-d", "0", "--eu=false"}.view()).optional.empty());
+		CHECK(cmdStats{}.plan(Argv{"-d", "0"}.view()).optional.empty());
+		CHECK(onlyEu(cmdDump{}.plan(Argv{"--metrics", "eu.active,power.draw"}.view())));
+		CHECK(onlyEu(cmdDump{}.plan(Argv{"--metrics=eu.stall"}.view())));
+		CHECK(cmdDump{}.plan(Argv{"--metrics", "power.draw"}.view()).optional.empty());
+	}
+
+	TEST_CASE("without PerfObserve the EU feature is skipped and the driver stays sysman-only")
+	{
+		const auto plan = cmdStats{}.plan(Argv{"--eu"}.view());
+		CHECK(resolve(plan, Capability::NONE).driver == DriverMode::SysmanOnly);
+		CHECK(resolve(plan, Capability::NONE).skipped.size() == 1);
+		CHECK(resolve(plan, Capability::PerfObserve).driver == DriverMode::Full);
+		CHECK(resolve(plan, Capability::PerfObserve).skipped.empty());
 	}
 }

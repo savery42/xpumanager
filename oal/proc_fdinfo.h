@@ -149,4 +149,30 @@ ProcUtil aggregateDeviceUtil(const std::vector<ProcessSnapshot> &before, const s
 [[nodiscard]] std::unordered_map<std::string, uint32_t> engineCountsPerClass(const std::string &pciAddr,
 																			 const std::string &procRoot = "/proc");
 
+/**
+ * @brief Keeps this process registered as a DRM client of one GPU while it lives.
+ *
+ * Opening the render node creates a client with no context and no memory, and
+ * its fdinfo lists every engine class the device has at zero cycles. capture()
+ * then counts this process like any other, so an idle GPU reads as 0 % rather
+ * than "no data". The compute runtime used to provide this client as a side
+ * effect of zeInit; sysman-only runs need it explicitly. On a kernel whose
+ * fdinfo has no engine counters the client adds nothing, and utilization stays
+ * unavailable. A no-op on Windows.
+ */
+class RegisteredClient
+{
+public:
+	/// @param[in] pciAddr  BDF of the GPU, as capture() takes it.
+	explicit RegisteredClient(const std::string &pciAddr);
+	RegisteredClient(const RegisteredClient &) = delete;
+	RegisteredClient &operator=(const RegisteredClient &) = delete;
+	RegisteredClient(RegisteredClient &&) = delete;
+	RegisteredClient &operator=(RegisteredClient &&) = delete;
+	~RegisteredClient();
+
+private:
+	int fd = -1;
+};
+
 } // namespace fdinfo

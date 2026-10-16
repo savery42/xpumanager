@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <future>
 #include <metric.h>
 #include <optional>
@@ -243,6 +244,8 @@ struct MetricCache
 	std::optional<float> fdinfoVideo;		 ///< decode/encode engines from fdinfo
 	std::optional<float> fdinfoVideoEnhance; ///< video enhancement engines from fdinfo
 	std::optional<float> fdinfoCopy;
+	/** Keeps this process a DRM client across the window, and across ticks, so an idle GPU reads 0 %. */
+	std::shared_ptr<const fdinfo::RegisteredClient> fdinfoClient;
 };
 
 /**

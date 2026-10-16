@@ -158,6 +158,7 @@ MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs)
 		mem->getMemoryRW(&cache.memBefore.read, &cache.memBefore.write, &cache.memMaxBandwidth, &cache.memBefore.ts);
 	}
 	if (hasInput(inputs, MetricInput::FDINFO)) {
+		cache.fdinfoClient = std::make_shared<const fdinfo::RegisteredClient>(devPciAddr(dev));
 		cache.fdinfoSnap = fdinfo::capture(devPciAddr(dev));
 	}
 	if (hasInput(inputs, MetricInput::EU)) {
@@ -324,6 +325,7 @@ MetricCache populateMetricCacheContinuous(devInfo &dev, const MetricCache &prev,
 	// fdinfo fallback: carry the previous snapshot forward so populateMetricCacheEnd()
 	// can compute per-tick deltas; EU metrics are re-sampled fresh each tick.
 	curr.fdinfoSnap = prev.fdinfoSnap;
+	curr.fdinfoClient = prev.fdinfoClient;
 
 	populateMetricCacheEnd(dev, curr);
 	return curr;

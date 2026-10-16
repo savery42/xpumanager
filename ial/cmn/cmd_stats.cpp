@@ -2854,6 +2854,64 @@ void OfflinePagesTextPrinter::print(nlohmann::ordered_json *jsonObj)
 	}
 }
 
+namespace {
+
+using StatsCmdMap = std::unordered_map<statsCmdType, statsCmdStruct>;
+
+// EU metrics are stats' only compute-runtime (zet) consumer.
+constexpr std::array STATS_EU_FEATURES{OptionalFeature{"EU metrics (--eu)", Capability::PerfObserve, DriverMode::Full}};
+
+/// Clears @p cmds and declares stats' options on @p sub, bound into it. run() and needs() share it.
+void declareOptions(CLI::App &sub, StatsCmdMap &cmds)
+{
+	for (auto &[k, v] : cmds) {
+		v.enabled = false;
+		v.val.clear();
+	}
+	sub.set_help_flag("-h,--help", "Print this help message and exit");
+	sub.add_flag("-j,--json", cmds[STATS_JSON].enabled, "Print result in JSON format");
+	sub.add_option("-d,--device,--id", cmds[STATS_DEVICE].val,
+				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
+		->each([&cmds](const std::string &) { cmds[STATS_DEVICE].enabled = true; });
+	sub.add_flag("-e,--eu", cmds[STATS_EU].enabled, "Show EU statistics");
+	sub.add_flag("-r,--ras", cmds[STATS_RAS].enabled, "Show RAS error statistics");
+	sub.add_option("--samples", cmds[STATS_SAMPLES].val, "Number of samples to collect (minimum 1, default: 2)")
+		->each([&cmds](const std::string &) { cmds[STATS_SAMPLES].enabled = true; });
+	sub.add_option("--interval", cmds[STATS_INTERVAL].val, "Sampling interval in milliseconds")
+		->each([&cmds](const std::string &) { cmds[STATS_INTERVAL].enabled = true; });
+	sub.add_flag("--list-offline-pages", cmds[STATS_LIST_OFFLINE_PAGES].enabled,
+				 "List offline memory pages (exclusive; cannot be combined with other stats options)");
+}
+
+} // namespace
+
+/**
+ * @brief stats is sysman-only unless --eu is requested and available.
+ *
+ * An explicit --eu without PerfObserve still prints the remaining statistics,
+ * plus a notice.
+ *
+ * @param[in] cmdArgs  argv tokens after the subcommand name.
+ *
+ * @retval {.driver = DriverMode::None}                 @p cmdArgs does not parse; run() reports why.
+ * @retval {.driver = SysmanOnly, .optional = EU}       --eu.
+ * @retval {.driver = DriverMode::SysmanOnly}           Otherwise.
+ */
+CommandPlan cmdStats::needs(std::span<char *const> cmdArgs) const
+{
+	StatsCmdMap parsed = statsCmds;
+	CLI::App sub;
+	declareOptions(sub, parsed);
+	if (!parsesCleanly(sub, cmdArgs)) {
+		return {.driver = DriverMode::None};
+	}
+	CommandPlan plan{.driver = DriverMode::SysmanOnly};
+	if (parsed[STATS_EU].enabled) {
+		plan.optional = STATS_EU_FEATURES;
+	}
+	return plan;
+}
+
 /**
  * @brief Executes the stats run.
  *
@@ -2865,26 +2923,8 @@ int cmdStats::run(arg_struct *args)
 	std::vector<devInfo> deviceList;
 	ze_result_t result;
 
-	// Reset state
-	for (auto &[k, v] : statsCmds) {
-		v.enabled = false;
-		v.val.clear();
-	}
-
 	CLI::App sub{"Show GPU statistics", "stats"};
-	sub.set_help_flag("-h,--help", "Print this help message and exit");
-	sub.add_flag("-j,--json", statsCmds[STATS_JSON].enabled, "Print result in JSON format");
-	sub.add_option("-d,--device,--id", statsCmds[STATS_DEVICE].val,
-				   "Device index or BDF address, comma-separated for multiple (e.g. 0,1)")
-		->each([&](const std::string &) { statsCmds[STATS_DEVICE].enabled = true; });
-	sub.add_flag("-e,--eu", statsCmds[STATS_EU].enabled, "Show EU statistics");
-	sub.add_flag("-r,--ras", statsCmds[STATS_RAS].enabled, "Show RAS error statistics");
-	sub.add_option("--samples", statsCmds[STATS_SAMPLES].val, "Number of samples to collect (minimum 1, default: 2)")
-		->each([&](const std::string &) { statsCmds[STATS_SAMPLES].enabled = true; });
-	sub.add_option("--interval", statsCmds[STATS_INTERVAL].val, "Sampling interval in milliseconds")
-		->each([&](const std::string &) { statsCmds[STATS_INTERVAL].enabled = true; });
-	sub.add_flag("--list-offline-pages", statsCmds[STATS_LIST_OFFLINE_PAGES].enabled,
-				 "List offline memory pages (exclusive; cannot be combined with other stats options)");
+	declareOptions(sub, statsCmds);
 
 	try {
 		sub.parse(args->argc - 1, args->argv + 1);

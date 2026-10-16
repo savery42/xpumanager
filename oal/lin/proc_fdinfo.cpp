@@ -5,6 +5,7 @@
  */
 
 #include "../proc_fdinfo.h"
+#include "../process_platform.h"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +16,8 @@
 #include <fstream>
 #include <string_view>
 #include <utility>
+#include <fcntl.h>
+#include <unistd.h>
 #include <zes_api.h>
 
 namespace fdinfo {
@@ -428,6 +431,23 @@ std::unordered_map<std::string, uint32_t> engineCountsPerClass(const std::string
 		}
 	}
 	return counts;
+}
+
+RegisteredClient::RegisteredClient(const std::string &pciAddr)
+{
+	for (const std::string &node : deviceNodesForBdf(pciAddr)) {
+		if (std::string_view{node}.substr(node.rfind('/') + 1).starts_with("renderD")) {
+			fd = ::open(node.c_str(), O_RDWR | O_CLOEXEC);
+			return;
+		}
+	}
+}
+
+RegisteredClient::~RegisteredClient()
+{
+	if (fd >= 0) {
+		::close(fd);
+	}
 }
 
 } // namespace fdinfo

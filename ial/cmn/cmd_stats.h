@@ -343,6 +343,9 @@ public:
 																 const std::vector<zes_process_state_t> &processList,
 																 uint32_t selfPid);
 
+protected:
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
+
 private:
 	static ze_result_t runListOfflinePages(std::vector<devInfo> &deviceList, Printer *printer, bool jsonMode);
 	static std::string formatIso8601Timestamp(const std::chrono::system_clock::time_point &timePoint);

@@ -45,6 +45,9 @@ public:
 	static ze_result_t getProcessList(const devInfo *dev, std::vector<psInfo> &psInfoList);
 	static void buildPsInfoList(std::vector<psInfo> &psInfoList, const std::vector<zes_process_state_t> &processList,
 								uint32_t devIndex, uint32_t selfPid);
+
+protected:
+	[[nodiscard]] CommandPlan needs(std::span<char *const> cmdArgs) const override;
 };
 
 using psSubCmdFunc = ze_result_t (cmdPs::*)(devInfo *d, nlohmann::ordered_json *jsonObj);
