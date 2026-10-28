@@ -117,7 +117,20 @@ EngineCache deriveEngineUtil(const std::vector<EngineActivitySample> &before,
 	return euVec[0];
 }
 
-MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs)
+// The device's fdinfo snapshots: from the shared snapshot when the caller took one, otherwise
+// from a walk of its own.
+static std::vector<fdinfo::ProcessSnapshot> fdinfoOf(const devInfo &dev, const fdinfo::DeviceSnapshots *fdinfoNow)
+{
+	const std::string pci = devPciAddr(dev);
+	return fdinfoNow != nullptr ? fdinfo::snapshotsFor(*fdinfoNow, pci) : fdinfo::capture(pci);
+}
+
+fdinfo::DeviceSnapshots captureFdinfo(MetricInput inputs)
+{
+	return hasInput(inputs, MetricInput::FDINFO) ? fdinfo::captureAll() : fdinfo::DeviceSnapshots{};
+}
+
+MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs, const fdinfo::DeviceSnapshots *fdinfoNow)
 {
 	MetricCache cache;
 	cache.inputs = inputs;
@@ -159,7 +172,7 @@ MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs)
 	}
 	if (hasInput(inputs, MetricInput::FDINFO)) {
 		cache.fdinfoClient = std::make_shared<const fdinfo::RegisteredClient>(devPciAddr(dev));
-		cache.fdinfoSnap = fdinfo::capture(devPciAddr(dev));
+		cache.fdinfoSnap = fdinfoOf(dev, fdinfoNow);
 	}
 	if (hasInput(inputs, MetricInput::EU)) {
 		cache.euPending =
@@ -169,7 +182,7 @@ MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs)
 	return cache;
 }
 
-void populateMetricCacheEnd(devInfo &dev, MetricCache &cache)
+void populateMetricCacheEnd(devInfo &dev, MetricCache &cache, const fdinfo::DeviceSnapshots *fdinfoNow)
 {
 	const MetricInput inputs = cache.inputs;
 	enginegroup *eg = dev.dev->getEngineGroup();
@@ -255,7 +268,7 @@ void populateMetricCacheEnd(devInfo &dev, MetricCache &cache)
 	cache.fdinfoVideoEnhance = std::nullopt;
 	cache.fdinfoCopy = std::nullopt;
 	if (hasInput(inputs, MetricInput::FDINFO)) {
-		auto fdAfter = fdinfo::capture(devPciAddr(dev));
+		auto fdAfter = fdinfoOf(dev, fdinfoNow);
 		const auto devUtil = fdinfo::aggregateDeviceUtil(cache.fdinfoSnap, fdAfter);
 		cache.fdinfoSnap = std::move(fdAfter);
 		cache.fdinfoCompute = devUtil.compute;
@@ -297,7 +310,8 @@ std::optional<float> busiestEngineClass(std::optional<float> compute, std::optio
 	return busiest;
 }
 
-MetricCache populateMetricCacheContinuous(devInfo &dev, const MetricCache &prev, MetricInput inputs)
+MetricCache populateMetricCacheContinuous(devInfo &dev, const MetricCache &prev, MetricInput inputs,
+										  const fdinfo::DeviceSnapshots *fdinfoNow)
 {
 	MetricCache curr;
 	curr.inputs = inputs;
@@ -327,7 +341,7 @@ MetricCache populateMetricCacheContinuous(devInfo &dev, const MetricCache &prev,
 	curr.fdinfoSnap = prev.fdinfoSnap;
 	curr.fdinfoClient = prev.fdinfoClient;
 
-	populateMetricCacheEnd(dev, curr);
+	populateMetricCacheEnd(dev, curr, fdinfoNow);
 	return curr;
 }
 
