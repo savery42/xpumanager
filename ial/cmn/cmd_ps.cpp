@@ -15,6 +15,7 @@
 #include <metric.h>
 #include <algorithm>
 #include <array>
+#include <map>
 #include <chrono>
 #include <future>
 #include <numeric>
@@ -379,6 +380,49 @@ void cmdPs::dropIdleRuntimeContexts(std::vector<psInfo> &psInfoList, std::size_t
 }
 
 /**
+ * @brief A device's process list read from its fdinfo snapshots, in zesDeviceProcessesGetState()'s form
+ *
+ * Level Zero builds the same list from the same fdinfo, but walks every process's fds again for
+ * each device; the snapshots a sample takes anyway already hold it.  A process is listed when either
+ * snapshot saw it, the later one's figures winning, so one that opened the device during the window
+ * is listed as Level Zero would list it.  memSize, sharedSize and engines are what Level Zero reports;
+ * process::getState() corrects them from fdinfo as it does Level Zero's.
+ *
+ * @param[in] before   The device's snapshots from the start of the sample.
+ * @param[in] after    The device's snapshots from its end.
+ * @param[in] selfPid  This process: xpu-smi holds a DRM client on every device it opened.
+ * @retval list     fdinfo reports this device: xpu-smi's own client is in a snapshot
+ * @retval nullopt  it does not (a driver without DRM fdinfo, Windows), so ask Level Zero
+ */
+std::optional<std::vector<zes_process_state_t>>
+cmdPs::processStatesFromFdinfo(const std::vector<fdinfo::ProcessSnapshot> &before,
+							   const std::vector<fdinfo::ProcessSnapshot> &after, uint32_t selfPid)
+{
+	const auto hasSelf = [selfPid](const fdinfo::ProcessSnapshot &s) { return s.pid == selfPid; };
+	if (std::ranges::none_of(before, hasSelf) && std::ranges::none_of(after, hasSelf)) {
+		return std::nullopt;
+	}
+	std::map<uint32_t, const fdinfo::ProcessSnapshot *> latest;
+	for (const auto *snaps : {&before, &after}) {
+		for (const auto &snap : *snaps) {
+			latest.insert_or_assign(snap.pid, &snap);
+		}
+	}
+	std::vector<zes_process_state_t> states;
+	states.reserve(latest.size());
+	for (const auto &[pid, snap] : latest) {
+		zes_process_state_t ps{};
+		ps.stype = ZES_STRUCTURE_TYPE_PROCESS_STATE;
+		ps.processId = pid;
+		ps.engines = static_cast<zes_engine_type_flags_t>(fdinfo::enginesFromSnapshot(*snap));
+		ps.memSize = snap->vramBytes;
+		ps.sharedSize = snap->sharedVramBytes;
+		states.push_back(ps);
+	}
+	return states;
+}
+
+/**
  * @brief Gets the process information status for the given device.
  *
  * @param dev       Device to query.
@@ -388,10 +432,12 @@ void cmdPs::dropIdleRuntimeContexts(std::vector<psInfo> &psInfoList, std::size_t
  *                   dropIdleRuntimeContexts() uses as its reference.  Not taken from the
  *                   process list, which drops xpu-smi as a process that ran no work
  *                   here.  Left untouched when fdinfo shows no VRAM (iGPU, Windows).
+ * @param known     The device's processes from processStatesFromFdinfo(), used instead of
+ *                  asking Level Zero; nullptr asks Level Zero.
  * @return ZE_RESULT_SUCCESS if process information was retrieved successfully.
  */
 ze_result_t cmdPs::getProcessList(const devInfo *dev, std::vector<psInfo> &psInfoList,
-								  std::optional<uint64_t> *selfMemKiB)
+								  std::optional<uint64_t> *selfMemKiB, const std::vector<zes_process_state_t> *known)
 {
 	TRACING();
 	ze_result_t result = ZE_RESULT_SUCCESS;
@@ -402,7 +448,8 @@ ze_result_t cmdPs::getProcessList(const devInfo *dev, std::vector<psInfo> &psInf
 		ERR("Error: Process pointer not found.\n");
 		return ZE_RESULT_ERROR_UNKNOWN;
 	}
-	result = ps->getState(dev->zesDeviceHdl, &processList);
+	DBG("  - process list of device {} from {}\n", dev->index, known != nullptr ? "fdinfo" : "Level Zero");
+	result = ps->getState(dev->zesDeviceHdl, &processList, known);
 	buildPsInfoList(psInfoList, processList, dev->index, getCurrentProcessId());
 	if (selfMemKiB != nullptr) {
 		const auto self = vramFromFdinfo(getCurrentProcessId(), deviceNodesForBdf(devPciAddr(*dev)));
@@ -631,7 +678,8 @@ int cmdPs::run(arg_struct *args)
 	if (!deviceList.empty()) {
 		// ── Phase 1: take the fdinfo before-snapshot ─────────────────────────────
 		// One /proc walk serves every device: each walk reads every process's fds, so a
-		// walk per device would repeat that for each GPU.
+		// walk per device would repeat that for each GPU.  The process lists come from the
+		// same snapshots where fdinfo reports a device, so Level Zero walks none.
 		const fdinfo::Walk fdBefore = fdinfo::walk();
 
 		// Idle runtime contexts are told apart by the other GPUs a process holds, so
@@ -667,7 +715,8 @@ int cmdPs::run(arg_struct *args)
 
 			const std::size_t startIdx = psInfoList.size();
 			std::optional<uint64_t> selfMemKiB;
-			const auto devResult = getProcessList(&dev, psInfoList, &selfMemKiB);
+			const auto known = processStatesFromFdinfo(fdBeforeDev, fdAfter, getCurrentProcessId());
+			const auto devResult = getProcessList(&dev, psInfoList, &selfMemKiB, known ? &*known : nullptr);
 			if (isFatalPsError(devResult) && firstError == ZE_RESULT_SUCCESS) {
 				firstError = devResult;
 			}

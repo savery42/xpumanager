@@ -64,15 +64,20 @@ ProcessFetch fetchProcessStates(const ProcessStateQuery &query, uint32_t capacit
  *
  * @param[in]  device       Sysman device handle.
  * @param[out] processList  Cleared and repopulated on success.
+ * @param[in]  known        Used instead of zesDeviceProcessesGetState() when not nullptr; see
+ *                          sysprocess.h.
  *
  * @retval ZE_RESULT_SUCCESS  Enumeration and correction completed without error.
  * @retval ZE_RESULT_ERROR_*  Level Zero error; @p processList may be empty.
  */
-ze_result_t process::getState(zes_device_handle_t device, std::vector<zes_process_state_t> *processList)
+ze_result_t process::getState(zes_device_handle_t device, std::vector<zes_process_state_t> *processList,
+							  const std::vector<zes_process_state_t> *known)
 {
-	auto [result, states] = fetchProcessStates(
-		[device](uint32_t *count, zes_process_state_t *s) { return zesDeviceProcessesGetState(device, count, s); },
-		PROCESS_CAPACITY_HINT);
+	const auto query = [device](uint32_t *count, zes_process_state_t *s) {
+		return zesDeviceProcessesGetState(device, count, s);
+	};
+	auto [result, states] =
+		known != nullptr ? ProcessFetch{ZE_RESULT_SUCCESS, *known} : fetchProcessStates(query, PROCESS_CAPACITY_HINT);
 	if (result != ZE_RESULT_SUCCESS) {
 		if (result == ZE_RESULT_ERROR_INVALID_SIZE) {
 			DBG("Process list changed faster than {} retries could keep up; skipping this cycle\n",

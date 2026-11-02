@@ -1161,7 +1161,12 @@ QueryNode QuerySession::sampleDevice(std::size_t index, const FrameFdinfo &frame
 	evaluate(split.instant, dev, cache, values, failures);
 	std::vector<psInfo> procs;
 	if (options.selection.processes) {
-		if (const auto result = cmdPs::getProcessList(&dev, procs); isFatalPsError(result)) {
+		// From the frame's fdinfo snapshot where it reports this device, so Level Zero walks
+		// /proc for no device; query hides no idle contexts, so the frame start is enough.
+		const auto known = cmdPs::processStatesFromFdinfo(
+			fdinfo::snapshotsFor(frameFdinfo.start.devices, devPciAddr(dev)), {}, getCurrentProcessId());
+		if (const auto result = cmdPs::getProcessList(&dev, procs, nullptr, known ? &*known : nullptr);
+			isFatalPsError(result)) {
 			DBG("Could not list processes on device {}: 0x{:X}\n", dev.index, static_cast<uint32_t>(result));
 			procs.clear();
 		}
@@ -1206,7 +1211,10 @@ RenderedFrame QuerySession::renderFrame()
 	QueryReport report;
 	report.timestamp = nowIso8601();
 
-	FrameFdinfo frameFdinfo{.start = metrics::captureFdinfo(devices, inputs), .windowEnd = {}};
+	// One walk serves the frame's fdinfo fields and, when listed, its process lists (see sampleDevice()).
+	const metrics::MetricInput walkInputs =
+		options.selection.processes ? inputs | metrics::MetricInput::FDINFO : inputs;
+	FrameFdinfo frameFdinfo{.start = metrics::captureFdinfo(devices, walkInputs), .windowEnd = {}};
 	if (inputs != metrics::MetricInput::NONE) {
 		if (firstFrame) {
 			const auto windowEnd = std::chrono::steady_clock::now() + metrics::detail::SAMPLE_WINDOW;

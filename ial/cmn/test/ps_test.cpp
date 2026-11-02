@@ -509,3 +509,40 @@ TEST_SUITE("processTypeFromEngines")
 
 	TEST_CASE("no engine and no memory is not available") { CHECK(processTypeFromEngines(0, 0, 0) == "N/A"); }
 }
+
+#ifdef __linux__
+// fdinfo exists on Linux only: the Windows stub of enginesFromSnapshot() reports no engines.
+TEST_SUITE("cmd_ps process list from fdinfo")
+{
+	TEST_CASE("without xpu-smi's own client fdinfo does not stand in for Level Zero")
+	{
+		const auto before = std::vector{ccsSnap(100, 1, 10)};
+		CHECK_FALSE(cmdPs::processStatesFromFdinfo(before, before, 999).has_value());
+		CHECK_FALSE(cmdPs::processStatesFromFdinfo({}, {}, 999).has_value());
+	}
+
+	TEST_CASE("every process either snapshot saw is listed once, the later figures winning")
+	{
+		auto busyBefore = ccsSnap(100, 1, 10);
+		busyBefore.vramBytes = 1000;
+		auto busyAfter = ccsSnap(100, 2, 50);
+		busyAfter.vramBytes = 2000;
+		busyAfter.sharedVramBytes = 300;
+		const auto opened = ccsSnap(200, 2, 0); // opened the device during the window
+		const auto self = ccsSnap(999, 1, 0);
+
+		const auto states = cmdPs::processStatesFromFdinfo({busyBefore, self}, {busyAfter, opened, self}, 999);
+		REQUIRE(states.has_value());
+		REQUIRE(states->size() == 3);
+		const auto &busy = states->at(0);
+		CHECK(busy.stype == ZES_STRUCTURE_TYPE_PROCESS_STATE);
+		CHECK(busy.processId == 100);
+		CHECK(busy.memSize == 2000);
+		CHECK(busy.sharedSize == 300);
+		CHECK((busy.engines & ZES_ENGINE_TYPE_FLAG_COMPUTE) != 0);
+		CHECK(states->at(1).processId == 200);
+		CHECK(states->at(1).engines == 0); // no cycles yet: Level Zero's "ran nothing"
+		CHECK(states->at(2).processId == 999);
+	}
+}
+#endif

@@ -55,11 +55,15 @@ public:
 	 *
 	 * @param[in]  device       Sysman device handle.
 	 * @param[out] processList  Populated with one entry per active process.
+	 * @param[in]  known        The device's processes in zesDeviceProcessesGetState()'s form, already
+	 *                          read from the OS's own accounting: used instead of that call, which
+	 *                          walks every process's fds once per device.  nullptr queries Level Zero.
 	 *
 	 * @retval ZE_RESULT_SUCCESS       Enumeration succeeded.
 	 * @retval ZE_RESULT_ERROR_*       Level Zero error from the underlying call.
 	 */
-	[[nodiscard]] ze_result_t getState(zes_device_handle_t device, std::vector<zes_process_state_t> *processList);
+	[[nodiscard]] ze_result_t getState(zes_device_handle_t device, std::vector<zes_process_state_t> *processList,
+									   const std::vector<zes_process_state_t> *known = nullptr);
 
 	/**
 	 * @brief Runs a full process-monitoring cycle (used by the sysman loop).

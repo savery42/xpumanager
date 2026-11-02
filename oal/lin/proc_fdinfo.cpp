@@ -81,7 +81,33 @@ struct DrmClient
 {
 	std::string pdev;
 	std::unordered_map<std::string, EngineCounters> engines;
+	uint64_t vramBytes = 0;
+	uint64_t sharedVramBytes = 0;
 };
+
+// A memory figure from fdinfo, "<n>" or "<n> KiB|MiB|GiB", in bytes.
+static uint64_t parseMemBytes(std::string_view val) noexcept
+{
+	uint64_t n = 0;
+	const auto [end, ec] = std::from_chars(val.data(), val.data() + val.size(), n);
+	if (ec != std::errc{}) {
+		return 0;
+	}
+	std::string_view unit{end, static_cast<size_t>(val.data() + val.size() - end)};
+	while (!unit.empty() && unit.front() == ' ') {
+		unit.remove_prefix(1);
+	}
+	if (unit == "KiB") {
+		return n << 10;
+	}
+	if (unit == "MiB") {
+		return n << 20;
+	}
+	if (unit == "GiB") {
+		return n << 30;
+	}
+	return n;
+}
 
 // Parse one /proc/<pid>/fdinfo/<fd> file; nullopt when it is not a DRM client.
 static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
@@ -97,6 +123,8 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 	std::unordered_map<std::string, EngineCounters> engines;
 	std::string pdev;
 	bool isDrm = false;
+	uint64_t vramBytes = 0;
+	uint64_t sharedVramBytes = 0;
 
 	for (std::string line; std::getline(fin, line);) {
 		// All DRM fdinfo fields follow "key:\tvalue" format.
@@ -121,6 +149,10 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 			isDrm = true;
 		} else if (key == pdevKey) {
 			pdev = std::string{val};
+		} else if (key.starts_with("drm-total-vram")) {
+			vramBytes += parseMemBytes(val);
+		} else if (key.starts_with("drm-shared-vram")) {
+			sharedVramBytes += parseMemBytes(val);
 		} else if (const auto ek = parseEngineKey(key)) {
 			// i915 never emits Total, so its totalCycles stays 0: the wall-clock sentinel.
 			EngineCounters &c = engines[ek->engine];
@@ -142,7 +174,7 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 	if (!isDrm) {
 		return std::nullopt;
 	}
-	return DrmClient{std::move(pdev), std::move(engines)};
+	return DrmClient{std::move(pdev), std::move(engines), vramBytes, sharedVramBytes};
 }
 
 // Parse one /proc/<pid>/fdinfo/<fd> file.
@@ -231,6 +263,8 @@ static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t
 			dst.totalCycles = std::max(dst.totalCycles, cnt.totalCycles);
 			dst.hasBusy = dst.hasBusy || cnt.hasBusy;
 		}
+		snap.vramBytes += client->vramBytes;
+		snap.sharedVramBytes += client->sharedVramBytes;
 	});
 
 	for (auto &[pdev, snap] : perDevice) {

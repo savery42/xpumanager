@@ -219,6 +219,19 @@ TEST_CASE("captureAll: a link the fixture cannot resolve is matched by its /dev/
 	CHECK(fdinfo::snapshotsFor(all, BDF)[0].engines.at("ccs").cycles == 7);
 }
 
+TEST_CASE("captureAll: VRAM and shared VRAM are summed over the fds, in bytes")
+{
+	const TempDir proc;
+	addPidClient(proc.path, "100", "5", "xe", BDF,
+				 "drm-cycles-ccs:\t1\ndrm-total-vram0:\t1024 KiB\ndrm-shared-vram0:\t2 MiB\ndrm-total-gtt:\t4 KiB\n");
+	addPidClient(proc.path, "100", "6", "xe", BDF, "drm-cycles-ccs:\t1\ndrm-total-vram0:\t512\n");
+	const auto all = fdinfo::captureAll(proc.path.string());
+	const auto &snaps = fdinfo::snapshotsFor(all, BDF);
+	REQUIRE(snaps.size() == 1);
+	CHECK(snaps[0].vramBytes == 1024 * 1024 + 512); // GTT is not VRAM
+	CHECK(snaps[0].sharedVramBytes == 2 * 1024 * 1024);
+}
+
 TEST_CASE("walk: records every process it visited, in order")
 {
 	const TempDir proc;

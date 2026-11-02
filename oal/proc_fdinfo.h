@@ -67,6 +67,10 @@ struct ProcessSnapshot
 	uint32_t pid = 0;
 	uint64_t wallNs = 0;									 ///< CLOCK_MONOTONIC
 	std::unordered_map<std::string, EngineCounters> engines; ///< engine_name → counters
+	/// drm-total-vram* and drm-shared-vram* in bytes, summed over the process's fds on the device:
+	/// what zesDeviceProcessesGetState() reports as memSize and sharedSize.
+	uint64_t vramBytes = 0;
+	uint64_t sharedVramBytes = 0;
 };
 
 /// Per-engine utilisation map for a single process: engine_name → 0-100 %

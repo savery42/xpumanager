@@ -68,7 +68,11 @@ public:
 	void help(HELP helpType = FULL_HELP);
 	int run(arg_struct *args);
 	static ze_result_t getProcessList(const devInfo *dev, std::vector<psInfo> &psInfoList,
-									  std::optional<uint64_t> *selfMemKiB = nullptr);
+									  std::optional<uint64_t> *selfMemKiB = nullptr,
+									  const std::vector<zes_process_state_t> *known = nullptr);
+	[[nodiscard]] static std::optional<std::vector<zes_process_state_t>>
+	processStatesFromFdinfo(const std::vector<fdinfo::ProcessSnapshot> &before,
+							const std::vector<fdinfo::ProcessSnapshot> &after, uint32_t selfPid);
 	static void buildPsInfoList(std::vector<psInfo> &psInfoList, const std::vector<zes_process_state_t> &processList,
 								uint32_t devIndex, uint32_t selfPid);
 	static void dropIdleRuntimeContexts(std::vector<psInfo> &psInfoList, std::size_t first,

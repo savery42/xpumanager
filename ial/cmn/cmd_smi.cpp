@@ -744,21 +744,24 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 	// no longer add to the window, and with many GPUs devices no longer add to each other.
 	// fdinfo is the exception: one /proc walk per time point serves every device, because each
 	// walk reads every process's fds, and per-device walks repeat that per GPU. It is the util
-	// source where sysman engine counters aren't allowed, and tells processes working on a
-	// device from idle runtime contexts unless --all keeps them all; not taken when neither.
+	// source where sysman engine counters aren't allowed, tells processes working on a device
+	// from idle runtime contexts unless --all keeps them all, and holds the process lists
+	// themselves wherever it reports a device, so Level Zero walks none for those.
 	const bool useFdinfo = !sysmanEngineCountersAllowed();
-	const bool captureFdinfo = useFdinfo || !showAll;
 	const ProcessFacts processFacts{devPciAddrs(deviceList)};
-	fdinfo::Walk fdBefore;
-	if (captureFdinfo) {
-		fdBefore = fdinfo::walk();
-	}
+	const fdinfo::Walk fdBefore = fdinfo::walk();
 	const auto fdWindowEnd = std::chrono::steady_clock::now() + SMI_SAMPLE_WINDOW;
+	const uint32_t selfPid = getCurrentProcessId();
+	const auto fdinfoListsProcesses = [&](const devInfo &di) {
+		return std::ranges::any_of(fdinfo::snapshotsFor(fdBefore.devices, devPciAddr(di)),
+								   [selfPid](const fdinfo::ProcessSnapshot &s) { return s.pid == selfPid; });
+	};
 
 	std::vector<std::future<SmiDeviceSample>> samples;
 	samples.reserve(deviceList.size());
 	for (auto &di : deviceList) {
-		samples.push_back(std::async(std::launch::async, [&di] {
+		const bool listFromFdinfo = fdinfoListsProcesses(di);
+		samples.push_back(std::async(std::launch::async, [&di, listFromFdinfo] {
 			SmiDeviceSample sample;
 			SmiBaseline baseline;
 			captureBaseline(baseline, &di);
@@ -769,7 +772,8 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 			collectTemperature(sample.stats, &di);
 			collectMemory(sample.stats, &di);
 			collectPowerTdp(sample.stats, &di);
-			if (cmdPs::getProcessList(&di, sample.procs, &sample.selfMemKiB) != ZE_RESULT_SUCCESS) {
+			// From fdinfo once the window is over, otherwise from Level Zero inside it.
+			if (!listFromFdinfo && cmdPs::getProcessList(&di, sample.procs, &sample.selfMemKiB) != ZE_RESULT_SUCCESS) {
 				sample.procs.clear();
 			}
 
@@ -782,11 +786,8 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 	// ── 3. Get Level Zero version, while the devices sample ─────────────
 	const std::string lzVersion = args->sm.getLoaderVersion().value_or("");
 
-	fdinfo::Walk fdAfter;
-	if (captureFdinfo) {
-		std::this_thread::sleep_until(fdWindowEnd);
-		fdAfter = fdinfo::walkSince(fdBefore);
-	}
+	std::this_thread::sleep_until(fdWindowEnd);
+	const fdinfo::Walk fdAfter = fdinfo::walkSince(fdBefore);
 
 	std::vector<SmiDeviceStats> devStats;
 	std::vector<std::vector<psInfo>> procsPerDevice;
@@ -794,16 +795,21 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 	procsPerDevice.reserve(deviceList.size());
 	for (std::size_t i = 0; i < samples.size(); ++i) {
 		auto [stats, procs, selfMemKiB] = samples[i].get();
-		if (captureFdinfo) {
-			const std::string pci = devPciAddr(deviceList[i]);
-			const auto &before = fdinfo::snapshotsFor(fdBefore.devices, pci);
-			const auto &after = fdinfo::snapshotsFor(fdAfter.devices, pci);
-			if (useFdinfo) {
-				applyFdinfoUtil(stats, fdinfo::aggregateDeviceUtil(before, after));
+		const std::string pci = devPciAddr(deviceList[i]);
+		const auto &before = fdinfo::snapshotsFor(fdBefore.devices, pci);
+		const auto &after = fdinfo::snapshotsFor(fdAfter.devices, pci);
+		if (fdinfoListsProcesses(deviceList[i])) {
+			const auto known = cmdPs::processStatesFromFdinfo(before, after, selfPid);
+			if (cmdPs::getProcessList(&deviceList[i], procs, &selfMemKiB, known ? &*known : nullptr) !=
+				ZE_RESULT_SUCCESS) {
+				procs.clear();
 			}
-			if (!showAll) {
-				cmdPs::dropIdleRuntimeContexts(procs, 0, before, after, selfMemKiB, processFacts);
-			}
+		}
+		if (useFdinfo) {
+			applyFdinfoUtil(stats, fdinfo::aggregateDeviceUtil(before, after));
+		}
+		if (!showAll) {
+			cmdPs::dropIdleRuntimeContexts(procs, 0, before, after, selfMemKiB, processFacts);
 		}
 		devStats.push_back(std::move(stats));
 		procsPerDevice.push_back(std::move(procs));
