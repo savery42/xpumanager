@@ -238,35 +238,62 @@ static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t
 	}
 }
 
-DeviceSnapshots captureAll(const std::string &procRoot)
+// Calls @p onPid(pid) for every process directory under @p procRoot.
+template <typename OnPid> static void forEachPid(const std::string &procRoot, OnPid onPid)
 {
-	namespace fs = std::filesystem;
-	const uint64_t wallNs = monotonicNs();
-	DeviceSnapshots result;
-
-	const auto isNumericPid = [](std::string_view s) noexcept {
-		return !s.empty() && s[0] >= '1' && std::ranges::all_of(s, [](char c) { return c >= '0' && c <= '9'; });
-	};
-
-	std::error_code ec;
-	for (const auto &procEnt : fs::directory_iterator{procRoot, ec}) {
-		const std::string name = procEnt.path().filename().string();
-		if (!isNumericPid(name)) {
-			continue;
-		}
-
-		uint32_t pid = 0;
-		const std::string_view sv{name};
-		std::from_chars(sv.begin(), sv.end(), pid);
-		if (pid == 0) {
-			continue;
-		}
-
-		captureOnePidAll(pid, procRoot, wallNs, result);
+	const std::unique_ptr<DIR, int (*)(DIR *)> dir{opendir(procRoot.c_str()), closedir};
+	if (!dir) {
+		return;
 	}
+	while (const dirent *ent = readdir(dir.get())) {
+		const std::string_view name{ent->d_name};
+		if (name.empty() || name[0] < '1' || name[0] > '9') {
+			continue;
+		}
+		uint32_t pid = 0;
+		const auto [end, ec] = std::from_chars(name.data(), name.data() + name.size(), pid);
+		if (ec == std::errc{} && end == name.data() + name.size()) {
+			onPid(pid);
+		}
+	}
+}
 
+Walk walk(const std::string &procRoot)
+{
+	const uint64_t wallNs = monotonicNs();
+	Walk result;
+	forEachPid(procRoot, [&](uint32_t pid) {
+		result.pids.push_back(pid);
+		captureOnePidAll(pid, procRoot, wallNs, result.devices);
+	});
+	std::ranges::sort(result.pids);
 	return result;
 }
+
+Walk walkSince(const Walk &before, const std::string &procRoot)
+{
+	std::unordered_set<uint32_t> clients;
+	for (const auto &[pdev, snaps] : before.devices) {
+		for (const auto &snap : snaps) {
+			clients.insert(snap.pid);
+		}
+	}
+
+	const uint64_t wallNs = monotonicNs();
+	Walk result;
+	forEachPid(procRoot, [&](uint32_t pid) {
+		result.pids.push_back(pid);
+		// A process that was there and held no DRM client is skipped: most of /proc, and
+		// the fd scan is the whole cost of a walk.
+		if (clients.contains(pid) || !std::ranges::binary_search(before.pids, pid)) {
+			captureOnePidAll(pid, procRoot, wallNs, result.devices);
+		}
+	});
+	std::ranges::sort(result.pids);
+	return result;
+}
+
+DeviceSnapshots captureAll(const std::string &procRoot) { return walk(procRoot).devices; }
 
 std::vector<ProcessSnapshot> capture(const std::string &pciAddr, // NOLINT(bugprone-easily-swappable-parameters)
 									 const std::string &procRoot)

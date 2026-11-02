@@ -140,7 +140,7 @@ static void registerFdinfoClient(const std::string &pci)
 	}
 }
 
-fdinfo::DeviceSnapshots captureFdinfo(std::span<const devInfo> devices, MetricInput inputs)
+fdinfo::Walk captureFdinfo(std::span<const devInfo> devices, MetricInput inputs)
 {
 	if (!hasInput(inputs, MetricInput::FDINFO)) {
 		return {};
@@ -148,7 +148,12 @@ fdinfo::DeviceSnapshots captureFdinfo(std::span<const devInfo> devices, MetricIn
 	for (const devInfo &dev : devices) {
 		registerFdinfoClient(devPciAddr(dev));
 	}
-	return fdinfo::captureAll();
+	return fdinfo::walk();
+}
+
+fdinfo::Walk captureFdinfoSince(MetricInput inputs, const fdinfo::Walk &before)
+{
+	return hasInput(inputs, MetricInput::FDINFO) ? fdinfo::walkSince(before) : fdinfo::Walk{};
 }
 
 MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs, const fdinfo::DeviceSnapshots *fdinfoNow)

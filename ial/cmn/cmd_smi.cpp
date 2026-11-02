@@ -749,9 +749,9 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 	const bool useFdinfo = !sysmanEngineCountersAllowed();
 	const bool captureFdinfo = useFdinfo || !showAll;
 	const ProcessFacts processFacts{devPciAddrs(deviceList)};
-	fdinfo::DeviceSnapshots fdBefore;
+	fdinfo::Walk fdBefore;
 	if (captureFdinfo) {
-		fdBefore = fdinfo::captureAll();
+		fdBefore = fdinfo::walk();
 	}
 	const auto fdWindowEnd = std::chrono::steady_clock::now() + SMI_SAMPLE_WINDOW;
 
@@ -782,10 +782,10 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 	// ── 3. Get Level Zero version, while the devices sample ─────────────
 	const std::string lzVersion = args->sm.getLoaderVersion().value_or("");
 
-	fdinfo::DeviceSnapshots fdAfter;
+	fdinfo::Walk fdAfter;
 	if (captureFdinfo) {
 		std::this_thread::sleep_until(fdWindowEnd);
-		fdAfter = fdinfo::captureAll();
+		fdAfter = fdinfo::walkSince(fdBefore);
 	}
 
 	std::vector<SmiDeviceStats> devStats;
@@ -796,8 +796,8 @@ std::pair<ze_result_t, std::string> cmdSmi::collectAndRender(arg_struct *args)
 		auto [stats, procs, selfMemKiB] = samples[i].get();
 		if (captureFdinfo) {
 			const std::string pci = devPciAddr(deviceList[i]);
-			const auto &before = fdinfo::snapshotsFor(fdBefore, pci);
-			const auto &after = fdinfo::snapshotsFor(fdAfter, pci);
+			const auto &before = fdinfo::snapshotsFor(fdBefore.devices, pci);
+			const auto &after = fdinfo::snapshotsFor(fdAfter.devices, pci);
 			if (useFdinfo) {
 				applyFdinfoUtil(stats, fdinfo::aggregateDeviceUtil(before, after));
 			}

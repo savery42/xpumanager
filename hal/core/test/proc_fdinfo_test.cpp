@@ -219,6 +219,37 @@ TEST_CASE("captureAll: a link the fixture cannot resolve is matched by its /dev/
 	CHECK(fdinfo::snapshotsFor(all, BDF)[0].engines.at("ccs").cycles == 7);
 }
 
+TEST_CASE("walk: records every process it visited, in order")
+{
+	const TempDir proc;
+	addPidFile(proc.path, "300", "3");
+	addPidClient(proc.path, "100", "5", "xe", BDF, "drm-cycles-ccs:\t1\n");
+	addPidFile(proc.path, "200", "3");
+	const auto w = fdinfo::walk(proc.path.string());
+	CHECK(w.pids == std::vector<uint32_t>{100, 200, 300});
+	CHECK(pidsOf(fdinfo::snapshotsFor(w.devices, BDF)) == std::vector<uint32_t>{100});
+}
+
+TEST_CASE("walkSince: reads DRM clients and new processes again, and skips the rest")
+{
+	const TempDir proc;
+	addPidClient(proc.path, "100", "5", "xe", BDF, "drm-cycles-ccs:\t10\n");
+	addPidFile(proc.path, "200", "3");
+	const auto before = fdinfo::walk(proc.path.string());
+
+	// The client ran more work, the non-client opened the device, and a new process appeared.
+	std::ofstream(proc.path / "100" / "fdinfo" / "5", std::ios::trunc)
+		<< "pos:\t0\ndrm-driver:\txe\ndrm-pdev:\t" << BDF << "\ndrm-cycles-ccs:\t30\n";
+	addPidClient(proc.path, "200", "6", "xe", BDF, "drm-cycles-ccs:\t5\n");
+	addPidClient(proc.path, "300", "5", "xe", BDF, "drm-cycles-ccs:\t1\n");
+
+	const auto after = fdinfo::walkSince(before, proc.path.string());
+	const auto &snaps = fdinfo::snapshotsFor(after.devices, BDF);
+	CHECK(pidsOf(snaps) == std::vector<uint32_t>{100, 300}); // 200 was there and held no client
+	CHECK(snapOf(snaps, 100).engines.at("ccs").cycles == 30);
+	CHECK(after.pids == std::vector<uint32_t>{100, 200, 300});
+}
+
 TEST_CASE("engineCountsPerClass: capacity gives the count, a class without it has one engine")
 {
 	const TempDir proc;

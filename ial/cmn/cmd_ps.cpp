@@ -632,7 +632,7 @@ int cmdPs::run(arg_struct *args)
 		// ── Phase 1: take the fdinfo before-snapshot ─────────────────────────────
 		// One /proc walk serves every device: each walk reads every process's fds, so a
 		// walk per device would repeat that for each GPU.
-		const fdinfo::DeviceSnapshots fdBefore = fdinfo::captureAll();
+		const fdinfo::Walk fdBefore = fdinfo::walk();
 
 		// Idle runtime contexts are told apart by the other GPUs a process holds, so
 		// count every GPU listed, not only the ones --device selected.
@@ -644,7 +644,7 @@ int cmdPs::run(arg_struct *args)
 
 		// ── Phase 2: measurement window ──────────────────────────────────────────
 		std::this_thread::sleep_for(PS_SAMPLE_WINDOW);
-		const fdinfo::DeviceSnapshots fdAfterAll = fdinfo::captureAll();
+		const fdinfo::Walk fdAfterAll = fdinfo::walkSince(fdBefore);
 
 		// ── Phase 3a: collect processes, apply fdinfo deltas (sequential) ────────
 		// Only startIdx/count/utilMap are carried forward to Phase 3c.
@@ -661,16 +661,16 @@ int cmdPs::run(arg_struct *args)
 		for (std::size_t i = 0; i < deviceList.size(); ++i) {
 			const auto &dev = deviceList[i];
 
+			const std::string pci = devPciAddr(dev);
+			const auto &fdBeforeDev = fdinfo::snapshotsFor(fdBefore.devices, pci);
+			const auto &fdAfter = fdinfo::snapshotsFor(fdAfterAll.devices, pci);
+
 			const std::size_t startIdx = psInfoList.size();
 			std::optional<uint64_t> selfMemKiB;
 			const auto devResult = getProcessList(&dev, psInfoList, &selfMemKiB);
 			if (isFatalPsError(devResult) && firstError == ZE_RESULT_SUCCESS) {
 				firstError = devResult;
 			}
-
-			const std::string pci = devPciAddr(dev);
-			const auto &fdBeforeDev = fdinfo::snapshotsFor(fdBefore, pci);
-			const auto &fdAfter = fdinfo::snapshotsFor(fdAfterAll, pci);
 			if (!psCmds[psCmdType::PS_ALL].enabled) {
 				dropIdleRuntimeContexts(psInfoList, startIdx, fdBeforeDev, fdAfter, selfMemKiB, processFacts);
 			}

@@ -23,6 +23,25 @@ std::vector<ProcessSnapshot> capture(const std::string & /*pciAddr*/, const std:
 DeviceSnapshots captureAll(const std::string & /*procRoot*/) { return {}; }
 
 /**
+ * @brief Stub: Windows has no /proc to walk.
+ *
+ * @param[in] procRoot  Unused.
+ *
+ * @retval empty  Always.
+ */
+Walk walk(const std::string & /*procRoot*/) { return {}; }
+
+/**
+ * @brief Stub: Windows has no /proc to walk.
+ *
+ * @param[in] before    Unused.
+ * @param[in] procRoot  Unused.
+ *
+ * @retval empty  Always.
+ */
+Walk walkSince(const Walk & /*before*/, const std::string & /*procRoot*/) { return {}; }
+
+/**
  * @brief Stub: captureAll() never reports a device on Windows.
  *
  * @param[in] all      Unused.

@@ -380,8 +380,11 @@ TEST_CASE_FIXTURE(ZeroDeviceFixture, "populateMetricCacheContinuous takes the ne
 
 TEST_CASE("captureFdinfo walks /proc only for fields that read fdinfo")
 {
-	CHECK(captureFdinfo({}, MetricInput::POWER | MetricInput::ENGINE).empty());
-	CHECK(captureFdinfo({}, MetricInput::NONE).empty());
+	const auto none = captureFdinfo({}, MetricInput::POWER | MetricInput::ENGINE);
+	CHECK(none.devices.empty());
+	CHECK(none.pids.empty());
+	CHECK(captureFdinfo({}, MetricInput::NONE).pids.empty());
+	CHECK(captureFdinfoSince(MetricInput::NONE, none).pids.empty());
 }
 
 TEST_CASE_FIXTURE(ZeroDeviceFixture, "pci.sub_device_id getter: UNSUPPORTED when the device has no PCI address")

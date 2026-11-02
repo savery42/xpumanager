@@ -96,6 +96,38 @@ std::vector<ProcessSnapshot> capture(const std::string &pciAddr, const std::stri
  */
 [[nodiscard]] DeviceSnapshots captureAll(const std::string &procRoot = "/proc");
 
+/** One walk of /proc: the DRM clients it found, and every process it looked at. */
+struct Walk
+{
+	DeviceSnapshots devices;
+	std::vector<uint32_t> pids; ///< every process visited, ascending
+};
+
+/**
+ * @brief captureAll(), keeping the processes it visited so a later walkSince() can skip most of them
+ *
+ * @param[in] procRoot Defaults to "/proc"; override in tests to point at a fixture directory.
+ * @retval Walk   the DRM clients found, and every PID visited
+ * @retval empty  /proc is unreadable, or the platform has no fdinfo
+ */
+[[nodiscard]] Walk walk(const std::string &procRoot = "/proc");
+
+/**
+ * @brief A walk that scans only the processes that can have changed since @p before
+ *
+ * Reads the fds of the DRM clients @p before found and of processes that were not there yet, and
+ * skips the rest: a process that held no DRM client then and opened one since is missed until the
+ * next full walk(). delta() and the other comparisons need a process in both snapshots, which a
+ * skipped process could not be anyway, so a sample's figures are unchanged; a full walk of a busy
+ * host reads tens of thousands of fds, this one usually a few hundred.
+ *
+ * @param[in] before   An earlier walk() or walkSince().
+ * @param[in] procRoot Defaults to "/proc"; override in tests to point at a fixture directory.
+ * @retval Walk   the DRM clients found, and every PID now present
+ * @retval empty  /proc is unreadable, or the platform has no fdinfo
+ */
+[[nodiscard]] Walk walkSince(const Walk &before, const std::string &procRoot = "/proc");
+
 /**
  * @brief The snapshots captureAll() took for one device
  *

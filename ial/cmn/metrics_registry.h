@@ -356,7 +356,18 @@ void populateMetricCacheEnd(devInfo &dev, MetricCache &cache, const fdinfo::Devi
  * @retval snapshots  @p inputs includes @c MetricInput::FDINFO
  * @retval empty      it does not, so /proc is not walked
  */
-[[nodiscard]] fdinfo::DeviceSnapshots captureFdinfo(std::span<const devInfo> devices, MetricInput inputs);
+[[nodiscard]] fdinfo::Walk captureFdinfo(std::span<const devInfo> devices, MetricInput inputs);
+
+/**
+ * @brief captureFdinfo() at the end of a window that started with @p before, reading only the
+ *        processes that can have changed since (see fdinfo::walkSince())
+ *
+ * @param[in] inputs  What the sample reads; see @ref inputsOf.
+ * @param[in] before  The captureFdinfo() that started the window.
+ * @retval snapshots  @p inputs includes @c MetricInput::FDINFO
+ * @retval empty      it does not, so /proc is not walked
+ */
+[[nodiscard]] fdinfo::Walk captureFdinfoSince(MetricInput inputs, const fdinfo::Walk &before);
 
 // ── MetricValue ───────────────────────────────────────────────────────────────
 
@@ -723,14 +734,14 @@ void runMetrics(Output &output, std::span<const QueryMetric *> fields, std::span
 	std::vector<MetricCache> caches(devices.size());
 	if (inputs != MetricInput::NONE) {
 		const auto deadline = std::chrono::steady_clock::now() + detail::SAMPLE_WINDOW;
-		const fdinfo::DeviceSnapshots fdBefore = captureFdinfo(devices, inputs);
+		const fdinfo::Walk fdBefore = captureFdinfo(devices, inputs);
 		for (std::size_t i = 0; i < devices.size(); ++i) {
-			caches[i] = populateMetricCacheBegin(devices[i], inputs, &fdBefore);
+			caches[i] = populateMetricCacheBegin(devices[i], inputs, &fdBefore.devices);
 		}
 		std::this_thread::sleep_until(deadline);
-		const fdinfo::DeviceSnapshots fdAfter = captureFdinfo(devices, inputs);
+		const fdinfo::Walk fdAfter = captureFdinfoSince(inputs, fdBefore);
 		for (std::size_t i = 0; i < devices.size(); ++i) {
-			populateMetricCacheEnd(devices[i], caches[i], &fdAfter);
+			populateMetricCacheEnd(devices[i], caches[i], &fdAfter.devices);
 		}
 	}
 

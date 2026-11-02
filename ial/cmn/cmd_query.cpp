@@ -1087,8 +1087,8 @@ struct FirmwareReads
  */
 struct FrameFdinfo
 {
-	fdinfo::DeviceSnapshots start;						   ///< taken when the frame starts
-	std::shared_future<fdinfo::DeviceSnapshots> windowEnd; ///< first frame only: at the end of its window
+	fdinfo::Walk start;							///< taken when the frame starts
+	std::shared_future<fdinfo::Walk> windowEnd; ///< first frame only: at the end of its window
 };
 
 class QuerySession
@@ -1135,10 +1135,10 @@ QueryNode QuerySession::sampleDevice(std::size_t index, const FrameFdinfo &frame
 	auto windowEnd = std::chrono::steady_clock::time_point{};
 	if (windowed) {
 		if (first) {
-			cache = metrics::populateMetricCacheBegin(dev, inputs, &frameFdinfo.start);
+			cache = metrics::populateMetricCacheBegin(dev, inputs, &frameFdinfo.start.devices);
 			windowEnd = std::chrono::steady_clock::now() + metrics::detail::SAMPLE_WINDOW;
 		} else {
-			cache = metrics::populateMetricCacheContinuous(dev, cache, inputs, &frameFdinfo.start);
+			cache = metrics::populateMetricCacheContinuous(dev, cache, inputs, &frameFdinfo.start.devices);
 		}
 	}
 
@@ -1175,7 +1175,7 @@ QueryNode QuerySession::sampleDevice(std::size_t index, const FrameFdinfo &frame
 	failures.insert(firmwareValues[index].failures.begin(), firmwareValues[index].failures.end());
 	if (windowed && first) {
 		std::this_thread::sleep_until(windowEnd);
-		metrics::populateMetricCacheEnd(dev, cache, &frameFdinfo.windowEnd.get());
+		metrics::populateMetricCacheEnd(dev, cache, &frameFdinfo.windowEnd.get().devices);
 	}
 	evaluate(split.windowed, dev, cache, values, failures);
 	auto *pci = dev.dev->getPCI();
@@ -1206,14 +1206,13 @@ RenderedFrame QuerySession::renderFrame()
 	QueryReport report;
 	report.timestamp = nowIso8601();
 
-	FrameFdinfo frameFdinfo{.start = {}, .windowEnd = {}};
+	FrameFdinfo frameFdinfo{.start = metrics::captureFdinfo(devices, inputs), .windowEnd = {}};
 	if (inputs != metrics::MetricInput::NONE) {
-		frameFdinfo.start = metrics::captureFdinfo(devices, inputs);
 		if (firstFrame) {
 			const auto windowEnd = std::chrono::steady_clock::now() + metrics::detail::SAMPLE_WINDOW;
-			const auto captureAtWindowEnd = [this, windowEnd] {
+			const auto captureAtWindowEnd = [this, windowEnd, &start = frameFdinfo.start] {
 				std::this_thread::sleep_until(windowEnd);
-				return metrics::captureFdinfo(devices, inputs);
+				return metrics::captureFdinfoSince(inputs, start);
 			};
 			frameFdinfo.windowEnd = std::async(std::launch::async, captureAtWindowEnd).share();
 		}
