@@ -206,6 +206,19 @@ TEST_CASE("snapshotsFor: a device without clients gives an empty vector")
 	CHECK(fdinfo::snapshotsFor({}, BDF).empty());
 }
 
+TEST_CASE("captureAll: a link the fixture cannot resolve is matched by its /dev/dri path")
+{
+	const TempDir proc;
+	const fs::path base = proc.path / "100";
+	fs::create_directories(base / "fd");
+	fs::create_directories(base / "fdinfo");
+	fs::create_symlink("/dev/dri/renderD9999", base / "fd" / "5"); // no such node anywhere
+	std::ofstream(base / "fdinfo" / "5") << "pos:\t0\ndrm-driver:\txe\ndrm-pdev:\t" << BDF << "\ndrm-cycles-ccs:\t7\n";
+	const auto all = fdinfo::captureAll(proc.path.string());
+	REQUIRE(fdinfo::snapshotsFor(all, BDF).size() == 1);
+	CHECK(fdinfo::snapshotsFor(all, BDF)[0].engines.at("ccs").cycles == 7);
+}
+
 TEST_CASE("engineCountsPerClass: capacity gives the count, a class without it has one engine")
 {
 	const TempDir proc;

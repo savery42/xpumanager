@@ -20,7 +20,13 @@
 #include <unordered_set>
 #include <unistd.h>
 #include <utility>
+#include <cerrno>
+#include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
+#include <memory>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <zes_api.h>
 
@@ -154,38 +160,63 @@ parseFdinfo(const std::string &path, // NOLINT(bugprone-easily-swappable-paramet
 
 /* Public API */
 
+// Character-device major of every DRM node (card*, renderD*), fixed by the kernel's devices.txt.
+static constexpr unsigned int DRM_CHAR_MAJOR = 226;
+
+/* Calls @p onDrmFd(name) for every fd of /proc/<pid> that is a DRM device node, and returns
+ * false when the fd directory cannot be read.  One fstatat() per fd, following the link to the
+ * open file: the device number identifies a DRM node however it is named or mounted, and costs
+ * a third of the lstat() + readlink() that std::filesystem::read_symlink() makes.  A link that
+ * leads nowhere (only a test fixture under procRoot, never a real /proc) falls back to the path. */
+template <typename OnDrmFd> static bool forEachDrmFd(const std::string &procRoot, uint32_t pid, OnDrmFd onDrmFd)
+{
+	const std::string fdDir = procRoot + "/" + std::to_string(pid) + "/fd";
+	const int dirFd = open(fdDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (dirFd < 0) {
+		return false;
+	}
+	const std::unique_ptr<DIR, int (*)(DIR *)> dir{fdopendir(dirFd), closedir};
+	if (!dir) {
+		close(dirFd);
+		return false;
+	}
+	while (const dirent *ent = readdir(dir.get())) {
+		const char *name = ent->d_name;
+		if (name[0] == '.') {
+			continue;
+		}
+		struct stat st
+		{};
+		if (fstatat(dirFd, name, &st, 0) == 0) {
+			if (S_ISCHR(st.st_mode) && major(st.st_rdev) == DRM_CHAR_MAJOR) {
+				onDrmFd(name);
+			}
+			continue;
+		}
+		if (errno != ENOENT) {
+			continue;
+		}
+		static constexpr std::string_view drmDir = "/dev/dri/";
+		std::array<char, 64> target{};
+		const ssize_t len = readlinkat(dirFd, name, target.data(), target.size());
+		if (len > 0 && std::string_view{target.data(), static_cast<size_t>(len)}.starts_with(drmDir)) {
+			onDrmFd(name);
+		}
+	}
+	return true;
+}
+
 /* Scan all open file descriptors of @p pid once and add a snapshot to @p out for each
  * device it is a DRM client of, merging the engine counters of that device's fds.
  * A device whose fds carry no engine counters gets no snapshot. */
 static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t wallNs, DeviceSnapshots &out)
 {
-	namespace fs = std::filesystem;
-
-	const fs::path base = fs::path{procRoot} / std::to_string(pid);
-	const fs::path fdDir = base / "fd";
-	const fs::path fdinfoDir = base / "fdinfo";
-
-	std::error_code ec;
-	fs::directory_iterator fds{fdDir, ec};
-	if (ec) {
-		return;
-	}
-
+	const std::string fdinfoDir = procRoot + "/" + std::to_string(pid) + "/fdinfo/";
 	std::unordered_map<std::string, ProcessSnapshot> perDevice;
-	for (const auto &fdEnt : fds) {
-		const fs::path target = fs::read_symlink(fdEnt.path(), ec);
-		if (ec) {
-			ec.clear();
-			continue;
-		}
-		if (target.parent_path() != "/dev/dri") {
-			continue;
-		}
-
-		const fs::path fdinfoPath = fdinfoDir / fdEnt.path().filename();
-		auto client = parseDrmFdinfo(fdinfoPath.string());
+	forEachDrmFd(procRoot, pid, [&](const char *fdName) {
+		auto client = parseDrmFdinfo(fdinfoDir + fdName);
 		if (!client || client->engines.empty()) {
-			continue;
+			return;
 		}
 
 		auto [it, inserted] = perDevice.try_emplace(client->pdev);
@@ -200,7 +231,7 @@ static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t
 			dst.totalCycles = std::max(dst.totalCycles, cnt.totalCycles);
 			dst.hasBusy = dst.hasBusy || cnt.hasBusy;
 		}
-	}
+	});
 
 	for (auto &[pdev, snap] : perDevice) {
 		out[pdev].push_back(std::move(snap));
