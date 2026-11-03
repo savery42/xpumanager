@@ -198,6 +198,18 @@ if get_option('with_tests')
 
   test('process_control_test', process_control_test)
 
+  # Local time formatting tests with TZ set to POSIX rule strings. Compiles local_time.cpp directly so the test needs no OAL link.
+  local_time_test = executable(
+    'local_time_test',
+    ['local_time_test.cpp', '../local_time.cpp'],
+    include_directories: [global_inc, include_directories('../..')],
+    dependencies: [doctest_dep],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('local_time_test', local_time_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')
