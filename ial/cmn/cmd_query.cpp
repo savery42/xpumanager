@@ -1208,12 +1208,12 @@ RenderedFrame QuerySession::renderFrame()
 
 	FrameFdinfo frameFdinfo{.start = {}, .windowEnd = {}};
 	if (inputs != metrics::MetricInput::NONE) {
-		frameFdinfo.start = metrics::captureFdinfo(inputs);
+		frameFdinfo.start = metrics::captureFdinfo(devices, inputs);
 		if (firstFrame) {
 			const auto windowEnd = std::chrono::steady_clock::now() + metrics::detail::SAMPLE_WINDOW;
 			const auto captureAtWindowEnd = [this, windowEnd] {
 				std::this_thread::sleep_until(windowEnd);
-				return metrics::captureFdinfo(inputs);
+				return metrics::captureFdinfo(devices, inputs);
 			};
 			frameFdinfo.windowEnd = std::async(std::launch::async, captureAtWindowEnd).share();
 		}

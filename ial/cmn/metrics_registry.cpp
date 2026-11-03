@@ -5,6 +5,8 @@
  */
 
 #include "metrics_registry.h"
+#include <mutex>
+#include <map>
 #include "cmds.h"
 #include "metrics/temperature_metrics.h"
 #include "metrics/utilization.h"
@@ -125,9 +127,28 @@ static std::vector<fdinfo::ProcessSnapshot> fdinfoOf(const devInfo &dev, const f
 	return fdinfoNow != nullptr ? fdinfo::snapshotsFor(*fdinfoNow, pci) : fdinfo::capture(pci);
 }
 
-fdinfo::DeviceSnapshots captureFdinfo(MetricInput inputs)
+// Registers this process as a DRM client of the GPU at @p pci, once, for the rest of the run.
+// The client must exist before any snapshot that should count it, including one shared walk
+// taken before the per-device calls, so it outlives every cache rather than living in one.
+static void registerFdinfoClient(const std::string &pci)
 {
-	return hasInput(inputs, MetricInput::FDINFO) ? fdinfo::captureAll() : fdinfo::DeviceSnapshots{};
+	static std::mutex lock;
+	static std::map<std::string, std::unique_ptr<const fdinfo::RegisteredClient>> clients;
+	const std::lock_guard guard{lock};
+	if (!clients.contains(pci)) {
+		clients.emplace(pci, std::make_unique<const fdinfo::RegisteredClient>(pci));
+	}
+}
+
+fdinfo::DeviceSnapshots captureFdinfo(std::span<const devInfo> devices, MetricInput inputs)
+{
+	if (!hasInput(inputs, MetricInput::FDINFO)) {
+		return {};
+	}
+	for (const devInfo &dev : devices) {
+		registerFdinfoClient(devPciAddr(dev));
+	}
+	return fdinfo::captureAll();
 }
 
 MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs, const fdinfo::DeviceSnapshots *fdinfoNow)
@@ -171,7 +192,7 @@ MetricCache populateMetricCacheBegin(devInfo &dev, MetricInput inputs, const fdi
 		mem->getMemoryRW(&cache.memBefore.read, &cache.memBefore.write, &cache.memMaxBandwidth, &cache.memBefore.ts);
 	}
 	if (hasInput(inputs, MetricInput::FDINFO)) {
-		cache.fdinfoClient = std::make_shared<const fdinfo::RegisteredClient>(devPciAddr(dev));
+		registerFdinfoClient(devPciAddr(dev));
 		cache.fdinfoSnap = fdinfoOf(dev, fdinfoNow);
 	}
 	if (hasInput(inputs, MetricInput::EU)) {
@@ -339,7 +360,6 @@ MetricCache populateMetricCacheContinuous(devInfo &dev, const MetricCache &prev,
 	// fdinfo fallback: carry the previous snapshot forward so populateMetricCacheEnd()
 	// can compute per-tick deltas; EU metrics are re-sampled fresh each tick.
 	curr.fdinfoSnap = prev.fdinfoSnap;
-	curr.fdinfoClient = prev.fdinfoClient;
 
 	populateMetricCacheEnd(dev, curr, fdinfoNow);
 	return curr;

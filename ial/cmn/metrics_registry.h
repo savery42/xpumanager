@@ -244,8 +244,6 @@ struct MetricCache
 	std::optional<float> fdinfoVideo;		 ///< decode/encode engines from fdinfo
 	std::optional<float> fdinfoVideoEnhance; ///< video enhancement engines from fdinfo
 	std::optional<float> fdinfoCopy;
-	/** Keeps this process a DRM client across the window, and across ticks, so an idle GPU reads 0 %. */
-	std::shared_ptr<const fdinfo::RegisteredClient> fdinfoClient;
 };
 
 /**
@@ -350,11 +348,15 @@ void populateMetricCacheEnd(devInfo &dev, MetricCache &cache, const fdinfo::Devi
  * per time point: pass it as @c fdinfoNow to @ref populateMetricCacheBegin,
  * @ref populateMetricCacheEnd and @ref populateMetricCacheContinuous.
  *
+ * Registers this process as a DRM client of each of @p devices first, so an idle GPU is counted
+ * at 0 % in this snapshot rather than missing from it.
+ *
+ * @param[in] devices What the sample covers.
  * @param[in] inputs  What the sample reads; see @ref inputsOf.
  * @retval snapshots  @p inputs includes @c MetricInput::FDINFO
  * @retval empty      it does not, so /proc is not walked
  */
-[[nodiscard]] fdinfo::DeviceSnapshots captureFdinfo(MetricInput inputs);
+[[nodiscard]] fdinfo::DeviceSnapshots captureFdinfo(std::span<const devInfo> devices, MetricInput inputs);
 
 // ── MetricValue ───────────────────────────────────────────────────────────────
 
@@ -721,12 +723,12 @@ void runMetrics(Output &output, std::span<const QueryMetric *> fields, std::span
 	std::vector<MetricCache> caches(devices.size());
 	if (inputs != MetricInput::NONE) {
 		const auto deadline = std::chrono::steady_clock::now() + detail::SAMPLE_WINDOW;
-		const fdinfo::DeviceSnapshots fdBefore = captureFdinfo(inputs);
+		const fdinfo::DeviceSnapshots fdBefore = captureFdinfo(devices, inputs);
 		for (std::size_t i = 0; i < devices.size(); ++i) {
 			caches[i] = populateMetricCacheBegin(devices[i], inputs, &fdBefore);
 		}
 		std::this_thread::sleep_until(deadline);
-		const fdinfo::DeviceSnapshots fdAfter = captureFdinfo(inputs);
+		const fdinfo::DeviceSnapshots fdAfter = captureFdinfo(devices, inputs);
 		for (std::size_t i = 0; i < devices.size(); ++i) {
 			populateMetricCacheEnd(devices[i], caches[i], &fdAfter);
 		}
