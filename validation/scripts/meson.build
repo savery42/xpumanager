@@ -34,3 +34,18 @@ engine_context_probe_exe = executable(
   build_by_default: true,
   install: false,
 )
+
+# OpenCL load generator (compute, memory, copy, bus) for any GPU with an OpenCL driver; see
+# gpu_stress --help. Built only where OpenCL and std::format are available.
+opencl_dep = dependency('OpenCL', required: false)
+if opencl_dep.found() and cpp.has_header('format')
+  gpu_stress_exe = executable(
+    'gpu_stress',
+    'gpu_stress.cpp',
+    cpp_args: ['-DCL_TARGET_OPENCL_VERSION=300'],
+    dependencies: [opencl_dep, thread_dep],
+    link_args: ['-pie'],
+    build_by_default: true,
+    install: false,
+  )
+endif
