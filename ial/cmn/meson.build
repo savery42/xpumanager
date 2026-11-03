@@ -25,6 +25,7 @@ ial_cmn_sources = files(
   'cmd_query.cpp',
   'cmd_smi.cpp',
   'cmd_stats.cpp',
+  'cmd_top.cpp',
   'cmd_topology.cpp',
   'cmd_updatefw.cpp',
   'cmd_vgpu.cpp',

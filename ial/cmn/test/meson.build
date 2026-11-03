@@ -76,6 +76,23 @@ test('query_test', query_test,
   env: {'QUERY_DOCS': meson.project_source_root() / 'docs' / 'sphinx' / 'xpu-smi' / 'query.rst'},
 )
 
+top_test = executable(
+  'top_test',
+  'top_test.cpp',
+  include_directories: [
+    global_inc,
+    ial_cmn_inc,
+  ],
+  link_with: ial_cmn_lib,
+  dependencies: ial_cmn_test_deps,
+  cpp_args: ial_cmn_cpp_args,
+  link_args: is_linux ? ['-pie'] : [],
+  build_by_default: true,
+  install: false,
+)
+
+test('top_test', top_test)
+
 discovery_test = executable(
   'discovery_test',
   'discovery_test.cpp',

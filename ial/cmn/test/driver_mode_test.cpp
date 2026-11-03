@@ -24,6 +24,7 @@ std::string progName = "test";
 #include "cmd_log.h"
 #include "cmd_ps.h"
 #include "cmd_stats.h"
+#include "cmd_top.h"
 #include "cmd_topology.h"
 #include "cmd_vgpu.h"
 
@@ -225,6 +226,7 @@ TEST_SUITE("cmds::plan privilege")
 	TEST_CASE("ps and stats are sysman-only at baseline")
 	{
 		CHECK(cmdPs{}.plan(Argv{}.view()).driver == DriverMode::SysmanOnly);
+		CHECK(cmdTop{}.plan(Argv{}.view()).driver == DriverMode::SysmanOnly);
 		CHECK(cmdStats{}.plan(Argv{"-d", "0"}.view()).driver == DriverMode::SysmanOnly);
 		CHECK(cmdStats{}.plan(Argv{"-d", "0", "--bogus"}.view()).driver == DriverMode::None);
 	}
@@ -240,6 +242,8 @@ TEST_SUITE("cmds::plan EU")
 				   plan.optional.front().driver == DriverMode::Full;
 		};
 		CHECK(onlyEu(cmdPs{}.plan(Argv{}.view())));
+		CHECK(onlyEu(cmdTop{}.plan(Argv{}.view())));
+		CHECK(cmdTop{}.plan(Argv{"--help"}.view()).driver == DriverMode::None);
 		for (const char *eu : {"--eu", "-e", "-je", "--eu=true"}) {
 			CAPTURE(eu);
 			CHECK(onlyEu(cmdStats{}.plan(Argv{"-d", "0", eu}.view())));
