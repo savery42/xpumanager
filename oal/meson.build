@@ -22,6 +22,7 @@ if is_windows
     'win/path_lookup_win.cpp',
     'win/privilege.cpp',
     'win/proc_fdinfo.cpp',
+    'win/process_control.cpp',
     'win/process_platform.cpp',
     'win/terminal.cpp',
     'win/thread.cpp',
@@ -53,6 +54,7 @@ elif is_linux
     'lin/terminal.cpp',
     'lin/topology.cpp',
     'lin/pch_prod_state.cpp',
+    'lin/process_control.cpp',
     'lin/vram_debugfs.cpp',
   )
   oal_inc_dirs += [include_directories('lin')]
