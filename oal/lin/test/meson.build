@@ -174,6 +174,18 @@ if get_option('with_tests')
 
   test('privilege_test', privilege_test)
 
+  # Key decoding tests. decodeKey() is constexpr and header-only, so the test needs no OAL link.
+  keyboard_test = executable(
+    'keyboard_test',
+    'keyboard_test.cpp',
+    include_directories: [global_inc, include_directories('../..')],
+    dependencies: [doctest_dep],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('keyboard_test', keyboard_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')
