@@ -210,6 +210,18 @@ if get_option('with_tests')
 
   test('local_time_test', local_time_test)
 
+  # Process CPU time and resident memory from fixture stat files. Compiles process_stats.cpp directly so the test needs no OAL link.
+  process_stats_test = executable(
+    'process_stats_test',
+    ['process_stats_test.cpp', '../process_stats.cpp'],
+    include_directories: [global_inc, include_directories('../..')],
+    dependencies: [doctest_dep],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('process_stats_test', process_stats_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')
