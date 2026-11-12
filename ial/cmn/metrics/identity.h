@@ -9,6 +9,7 @@
 #pragma once
 
 #include "device.h"
+#include "driver_util.h"
 #include "metrics_registry.h"
 #include "oem_serial.h"
 #include "ze_api.h"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <cstring>
 #include "utility/compat/format.h"
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,13 +40,7 @@ namespace metrics::identity {
  */
 [[nodiscard]] inline std::string_view recoveryActionOf(zes_reset_reason_flags_t reasons) noexcept
 {
-	if (reasons == 0) {
-		return "None";
-	}
-	if ((reasons & ZES_RESET_REASON_FLAG_REPAIR) != 0U) {
-		return "Reset to repair";
-	}
-	return "Reset";
+	return xpum::detail::resetRecoveryActionOf(reasons);
 }
 
 /** Width of a BDF address rendered as "dddd:bb:dd.f" (see pci::getBDFStr). */
@@ -299,15 +295,21 @@ inline std::span<const QueryMetric> getIdentityMetrics() noexcept
 		{
 			.name = "recovery_action",
 			.unit = "",
-			.description = "What the device needs to keep working: None, Reset, or Reset to repair",
+			.description = "What the device needs to keep working: None, Reset, Reset to repair, or what a state that "
+						   "is not normal needs, e.g. Firmware update and GPU reset",
 			.source = MetricSource::Live,
 			.groups = MetricGroup::IDENTITY,
 			.getter = [](devInfo &d, MetricValue &out, const MetricCache &) -> ze_result_t {
+				// A state that is not normal, e.g. survivability mode, needs its own action; otherwise the reset
+				// reasons decide.
 				zes_reset_reason_flags_t reasons = 0;
-				if (auto const r = d.dev->getResetReasons(reasons); r != ZE_RESULT_SUCCESS) {
+				auto const r = d.dev->getResetReasons(reasons);
+				const auto action = xpum::detail::deviceRecoveryActionOf(
+					d.dev->getDevState(), r == ZE_RESULT_SUCCESS ? std::optional{reasons} : std::nullopt);
+				if (!action.has_value()) {
 					return r;
 				}
-				out = std::string{recoveryActionOf(reasons)};
+				out = std::string{*action};
 				return ZE_RESULT_SUCCESS;
 			},
 		},

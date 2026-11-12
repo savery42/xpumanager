@@ -13,6 +13,7 @@
 #include <list>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -88,9 +89,9 @@ protected:
 	std::string name;
 
 public:
-	cmds(){};
+	cmds() {};
 	const std::string &getName() { return name; }
-	virtual ~cmds(){};
+	virtual ~cmds() {};
 	void printHelp(std::vector<helpCmd> helpList, HELP helpType = FULL_HELP);
 	virtual void help(HELP helpType = FULL_HELP) = 0;
 	virtual int run(arg_struct *args) = 0;
@@ -120,6 +121,16 @@ inline std::string devPciAddr(const devInfo &dev)
 	}
 	return dev.dev->getBDFStr();
 }
+
+/// The GPUs a --device value names: those Level Zero reports, and those listed after them for their state.
+struct SelectedDevices
+{
+	std::vector<devInfo> normal;
+	std::vector<devInfo> survivability; // listed for their state, e.g. survivability mode; see findSurvDevice()
+};
+
+/// Resolves a --device value against both kinds of GPU; see cmds.cpp.
+[[nodiscard]] SelectedDevices selectDevices(driver &sm, std::string_view spec);
 
 /**
  * @brief PCI addresses of a list of devices.

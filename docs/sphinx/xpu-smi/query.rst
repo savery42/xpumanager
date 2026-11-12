@@ -388,7 +388,9 @@ Identity
      - Section: ``IDENTITY``
 
        Source: device
-     - ``normal``, or ``survivability`` for a device whose firmware needs recovery.
+     - The state the driver reports: ``normal``, ``survivability mode``, ``wedged``, ``GPU lost``,
+       ``driver not loaded``, ``flash override``, or ``unknown`` when the driver cannot tell. See
+       :ref:`device states <query-device-states>`.
    * - GPU Virtualization Mode > Virtualization Mode
 
        ``gpu_virtualization_mode.virtualization_mode``
@@ -409,7 +411,7 @@ Identity
      - Section: ``IDENTITY``
 
        Source: ``recovery_action``
-     - What the driver says the device needs to keep working: ``None``, ``Reset`` (for example a wedged device) or ``Reset to repair``. A device in survivability mode shows ``Firmware update and GPU reset``.
+     - What the driver says the device needs to keep working: ``None``, ``Reset`` (for example a wedged device) or ``Reset to repair``. A device whose state is not normal shows the action that state needs instead, see :ref:`device states <query-device-states>`.
    * - Row
      - Details
      - Meaning
@@ -1258,7 +1260,8 @@ Reading the Report
   card node, and reads ``N/A`` on Windows. Slot Number is the physical PCI slot the platform
   firmware names, and reads ``N/A`` on systems whose firmware names none.
 - GPU Recovery Action says what the driver reports the device needs: ``None``, ``Reset`` (for
-  example a wedged device), or ``Reset to repair``.
+  example a wedged device), or ``Reset to repair``. A device whose state is not normal, for example
+  one in survivability mode, shows the action that state needs.
 - As root, the GFX firmware version is read from the GSC firmware interface, which takes about
   200 ms per device on some platforms. Devices are read in parallel, and the read overlaps
   the measurement window. On a device with an AMC the serial number and the board part number
@@ -1275,8 +1278,33 @@ Reading the Report
   for a value the driver or OS says the device does not support; a value missing for another or
   an unknown reason stays ``N/A``.
 
-A device in survivability mode is listed with only its state and the recovery action
-(``Firmware update and GPU reset``).
+.. _query-device-states:
+
+A device that the compute runtime does not report, for example one in survivability mode, is
+listed after the other devices with only its state and the recovery action that state needs:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Device State
+     - GPU Recovery Action
+   * - ``survivability mode``
+     - ``Firmware update and GPU reset``
+   * - ``GPU lost``
+     - ``Reboot``
+   * - ``driver not loaded``
+     - ``Load the kernel driver``
+   * - ``wedged``
+     - ``Reset``
+   * - ``flash override``
+     - ``FDO firmware update and GPU reset``
+   * - ``normal``
+     - ``None``
+   * - ``unknown`` (the driver cannot read the state)
+     - ``None``
+
+When the driver reports several states, the first one in this table is shown.
 
 JSON Output
 -----------

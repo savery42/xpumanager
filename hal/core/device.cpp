@@ -25,7 +25,7 @@
  */
 device::device()
 	: zeDriver(nullptr), zesDriver(nullptr), context(nullptr), zeDevice(0), zesDevice(0), deviceCount(0),
-	  deviceProperties{}, igpu(false), survMode(false), amc(0), drmDevPath{}, firmwareInstance(new firmware())
+	  deviceProperties{}, igpu(false), amc(0), drmDevPath{}, firmwareInstance(new firmware())
 {}
 
 /**

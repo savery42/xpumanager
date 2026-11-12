@@ -48,7 +48,7 @@ using ComputedStatic = std::optional<std::string> (*)(devInfo &dev);
 
 [[nodiscard]] std::optional<std::string> deviceStateOf(devInfo &dev)
 {
-	return std::string{dev.dev->isInSurvMode() ? DEVICE_STATE_SURV_MODE : DEVICE_STATE_NORMAL};
+	return std::string{xpum::detail::deviceConditionOf(dev.dev->getDevState()).state};
 }
 
 /// The number of the device's DRM card node, e.g. 1 for /dev/dri/card1.
@@ -933,14 +933,14 @@ QueryNode buildDeviceNode(std::string_view bdf, const QuerySelection &selection,
 	return device;
 }
 
-QueryNode survivabilityNode(std::string_view bdf)
+QueryNode deviceStateNode(std::string_view bdf, std::string_view state, std::string_view recoveryAction)
 {
 	QueryNode device;
 	device.label = "GPU " + std::string{bdf};
 	device.key = "pci_bus_id";
 	device.value = std::string{bdf};
-	device.children.push_back(leafOf("Device State", "device_state", std::string{DEVICE_STATE_SURV_MODE}));
-	device.children.push_back(leafOf("GPU Recovery Action", "gpu_recovery_action", "Firmware update and GPU reset"));
+	device.children.push_back(leafOf("Device State", "device_state", std::string{state}));
+	device.children.push_back(leafOf("GPU Recovery Action", "gpu_recovery_action", std::string{recoveryAction}));
 	return device;
 }
 
@@ -1221,7 +1221,9 @@ RenderedFrame QuerySession::renderFrame()
 		report.gpus.push_back(task.get());
 	}
 	for (auto &dev : survivability) {
-		report.gpus.push_back(survivabilityNode(devPciAddr(dev)));
+		const auto condition = xpum::detail::deviceConditionOf(dev.dev->getDevState());
+		const auto action = xpum::detail::deviceRecoveryActionOf(*dev.dev).value_or(condition.recoveryAction);
+		report.gpus.push_back(deviceStateNode(devPciAddr(dev), condition.state, action));
 	}
 	firstFrame = false;
 
@@ -1246,50 +1248,6 @@ constexpr auto SINGLE_SHOT_INTERVAL = std::chrono::milliseconds{0};
 constexpr auto DEFAULT_LOOP_INTERVAL = std::chrono::seconds{1};
 constexpr int OPTION_TEXT_WIDTH = 72;
 constexpr std::size_t ERROR_LIST_WIDTH = 68;
-
-/// The normal and the survivability GPUs a --device value names.
-struct SelectedDevices
-{
-	std::vector<devInfo> normal;
-	std::vector<devInfo> survivability;
-};
-
-/**
- * @brief Resolves a --device value against both the normal and the survivability GPUs.
- *
- * Each comma-separated selector is looked up among the survivability GPUs first, so one that
- * names such a GPU is not also reported as an unknown normal device. A selector that names
- * no GPU is reported and skipped.
- *
- * @param[in] sm   The driver that enumerated the GPUs.
- * @param[in] spec Device indices or PCI addresses, comma-separated; empty selects every GPU.
- *
- * @return The selected GPUs of each kind, without duplicates, in the order they were named.
- */
-[[nodiscard]] SelectedDevices selectDevices(driver &sm, std::string_view spec)
-{
-	SelectedDevices selected;
-	if (spec.empty()) {
-		std::ignore = sm.findDevice("", &selected.normal);
-		sm.findSurvDevice("", &selected.survivability);
-		return selected;
-	}
-	for (const auto part : spec | std::views::split(',')) {
-		const std::string token{part.begin(), part.end()};
-		if (token.empty()) {
-			continue;
-		}
-		const std::size_t before = selected.survivability.size();
-		sm.findSurvDevice(token.c_str(), &selected.survivability);
-		if (selected.survivability.size() == before) {
-			// A selector that matches nothing is logged by findDevice.
-			std::ignore = sm.findDevice(token.c_str(), &selected.normal);
-		}
-	}
-	xpum::detail::deduplicateByIndex(selected.normal);
-	xpum::detail::deduplicateByIndex(selected.survivability);
-	return selected;
-}
 
 /// `query` with no arguments prints the report; only `query help` is a help request.
 [[nodiscard]] bool printsHelpOnly(std::span<char *const> cmdArgs)

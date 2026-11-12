@@ -13,8 +13,6 @@
 #include <map>
 #include <string_view>
 
-inline constexpr char DEVICE_STATE_SURV_MODE[] = "survivability mode";
-inline constexpr char DEVICE_STATE_NORMAL[] = "normal";
 // Shown for properties whose only data source is restricted to privileged users
 inline constexpr char NA_REQUIRES_ROOT[] = "N/A (Requires Root)";
 
@@ -111,7 +109,7 @@ class cmdDiscovery : public cmds
 
 public:
 	cmdDiscovery() { name = "discovery"; };
-	~cmdDiscovery(){};
+	~cmdDiscovery() {};
 	void help(HELP helpType = FULL_HELP);
 	ze_result_t preCheck(std::vector<int> *dumpArgs);
 	ze_result_t dumpHeading(nlohmann::ordered_json *jsonObj);

@@ -203,8 +203,8 @@ void renderNode(const QueryNode &node, std::size_t depth, std::string &out);
 										const MetricValues &metricValues, const QueryStaticProps &staticProps,
 										std::span<const psInfo> procs, const RowNotes &notes = {});
 
-/// A device in survivability mode: only its state and the way to recover it.
-[[nodiscard]] QueryNode survivabilityNode(std::string_view bdf);
+/// A device listed for its state, e.g. survivability mode: only that state and the way to recover from it.
+[[nodiscard]] QueryNode deviceStateNode(std::string_view bdf, std::string_view state, std::string_view recoveryAction);
 
 } // namespace query
 

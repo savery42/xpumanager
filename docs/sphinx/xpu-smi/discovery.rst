@@ -265,6 +265,9 @@ Show detailed info in JSON format:
 
    xpu-smi discovery --device 0 -j
 
+With more than one device, for example ``--device 0,1``, the JSON output is a single object whose
+``device_list`` holds one entry per device, in the same shape as ``xpu-smi discovery -j``.
+
 Dump device name and PCI BDF for all devices in CSV format:
 
 .. code-block:: shell

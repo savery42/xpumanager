@@ -5,6 +5,7 @@
  */
 
 #include "cmd_discovery.h"
+#include "driver_util.h"
 #include "debug.h"
 #include "gfx_firmware_status.h"
 #include <CLI/CLI.hpp>
@@ -472,10 +473,12 @@ std::unique_ptr<nlohmann::ordered_json> cmdDiscovery::printDeviceDetail(devInfo 
 	deviceName(device, &outputLine);
 	(*jsonObj)["device_name"] = outputLine;
 
-	if (device->dev->isInSurvMode()) {
-		(*jsonObj)["device_state"] = DEVICE_STATE_SURV_MODE;
-	} else {
-		(*jsonObj)["device_state"] = DEVICE_STATE_NORMAL;
+	const auto condition = xpum::detail::deviceConditionOf(device->dev->getDevState());
+	(*jsonObj)["device_state"] = std::string{condition.state};
+	if (!condition.normal) {
+		if (const auto action = xpum::detail::deviceRecoveryActionOf(*device->dev); action.has_value()) {
+			(*jsonObj)["recovery_action"] = std::string{*action};
+		}
 	}
 
 	outputLine.clear();
@@ -779,9 +782,12 @@ ze_result_t cmdDiscovery::gatherDeviceProperties(devInfo *d, DeviceProperties &p
 	deviceName(d, &outputLine);
 	props["device_name"] = outputLine;
 
-	props["device_state"] = d->dev->isInSurvMode() ? DEVICE_STATE_SURV_MODE : DEVICE_STATE_NORMAL;
-	if (d->dev->isInSurvMode()) {
-		props["recovery_action"] = "Firmware update and GPU reset";
+	const auto condition = xpum::detail::deviceConditionOf(d->dev->getDevState());
+	props["device_state"] = std::string{condition.state};
+	if (!condition.normal) {
+		if (const auto action = xpum::detail::deviceRecoveryActionOf(*d->dev); action.has_value()) {
+			props["recovery_action"] = std::string{*action};
+		}
 	}
 	outputLine.clear();
 	vendorName(d, &outputLine);
@@ -2557,6 +2563,25 @@ ze_result_t cmdDiscovery::queryTdpFromAMC(devInfo *d, std::string *tdpString)
  * @param [in] printer Unique pointer to the Printer object for output formatting.
  * @param [in] type The type of device function to filter by.
  */
+/**
+ * @brief The entry of a device listed for its state, e.g. survivability mode: only that state and how to recover.
+ *
+ * @param[in] d The device.
+ *
+ * @return The entry, with the same keys in text and JSON output.
+ */
+static nlohmann::ordered_json stateDeviceEntry(devInfo &d)
+{
+	const auto condition = xpum::detail::deviceConditionOf(d.dev->getDevState());
+	nlohmann::ordered_json entry;
+	entry["device_id"] = d.index;
+	entry["device_state"] = std::string{condition.state};
+	entry["recovery_action"] =
+		std::string{xpum::detail::deviceRecoveryActionOf(*d.dev).value_or(condition.recoveryAction)};
+	entry["pci_bdf_address"] = std::string(d.dev->getPCI()->getBDFStr());
+	return entry;
+}
+
 void cmdDiscovery::printDeviceInfo(std::vector<devInfo> &deviceList, std::vector<devInfo> &survDeviceList,
 								   std::unique_ptr<Printer> &printer, devFuncType type)
 {
@@ -2578,14 +2603,10 @@ void cmdDiscovery::printDeviceInfo(std::vector<devInfo> &deviceList, std::vector
 		deviceListJson->push_back(*deviceJson);
 	}
 
-	// Append survivability devices as a sequential continuation in the same table
+	// Append the devices listed for their state, e.g. survivability mode, as a sequential continuation in the
+	// same table
 	for (auto &survDevice : survDeviceList) {
-		auto survEntry = std::make_unique<nlohmann::ordered_json>();
-		(*survEntry)["device_id"] = survDevice.index;
-		(*survEntry)["device_state"] = DEVICE_STATE_SURV_MODE;
-		(*survEntry)["recovery_action"] = "Firmware update and GPU reset";
-		(*survEntry)["pci_bdf_address"] = std::string(survDevice.dev->getPCI()->getBDFStr());
-		deviceListJson->push_back(*survEntry);
+		deviceListJson->push_back(stateDeviceEntry(survDevice));
 		found = true;
 	}
 
@@ -2655,14 +2676,15 @@ int cmdDiscovery::run(arg_struct *args)
 	}
 
 	const std::string bdf = discCmds[discCmdType::DISC_DEVICE].val;
-	auto result = args->sm.findDevice(bdf.c_str(), &deviceList);
-	if (bdf.empty() || deviceList.empty()) {
-		args->sm.findSurvDevice(bdf.c_str(), &survDeviceList);
-	}
-	if (result != ZE_RESULT_SUCCESS && !bdf.empty() && survDeviceList.empty()) {
+	// The devices listed for their state are looked up first, so naming one is not reported as an unknown device.
+	auto selected = selectDevices(args->sm, bdf);
+	deviceList = std::move(selected.normal);
+	survDeviceList = std::move(selected.survivability);
+	if (!bdf.empty() && deviceList.empty() && survDeviceList.empty()) {
 		ERR("Error: Device handle not found for device ID '{}'.\n", bdf);
-		return result;
+		return ZE_RESULT_ERROR_INVALID_ARGUMENT;
 	}
+	ze_result_t result = ZE_RESULT_SUCCESS;
 	// If no args were provided, then we need to print out this info:
 	//| 0   | Device Name: Intel(R) Graphics [0xe216]                                              |
 	//      | Vendor Name: Intel(R) Corporation                                                    |
@@ -2677,11 +2699,14 @@ int cmdDiscovery::run(arg_struct *args)
 	} else if (discCmds[discCmdType::DISC_VF].enabled || discCmds[discCmdType::DISC_VIRTUALFUNCTION].enabled) {
 		printDeviceInfo(deviceList, survDeviceList, printer, DEVICE_FUNCTION_TYPE_VIRTUAL);
 	} else if (discCmds[discCmdType::DISC_LISTAMCVERSIONS].enabled) {
+		// The AMC answers whatever state the GPU is in, so the devices listed for their state are included.
 		auto jsonObj = std::make_unique<nlohmann::ordered_json>();
-		for (auto &device : deviceList) {
-			result = listamcversions(&device, jsonObj.get());
-			if (result != ZE_RESULT_SUCCESS) {
-				return result;
+		for (auto *list : {&deviceList, &survDeviceList}) {
+			for (auto &device : *list) {
+				result = listamcversions(&device, jsonObj.get());
+				if (result != ZE_RESULT_SUCCESS) {
+					return result;
+				}
 			}
 		}
 		printer->print(jsonObj.get());
@@ -2691,15 +2716,36 @@ int cmdDiscovery::run(arg_struct *args)
 									 !discCmds[discCmdType::DISC_LISTAMCVERSIONS].enabled;
 
 		if (isDetailRequest) {
-			// --device without --dump: dumpAll overwrites jsonObj on each call, so
-			// print each device separately rather than accumulating into one object.
+			// --device without --dump: dumpAll writes a device's properties at the top level of its object, so
+			// each device gets an object of its own. In JSON, two or more devices go into one device_list, as
+			// without --device, so that the output stays a single JSON document.
+			const bool oneJsonDocument =
+				discCmds[discCmdType::DISC_JSON].enabled && deviceList.size() + survDeviceList.size() > 1;
+			auto devicesJson = nlohmann::ordered_json::array();
 			for (auto &device : deviceList) {
 				auto jsonObj = std::make_unique<nlohmann::ordered_json>();
 				result = dumpAll(&device, jsonObj.get());
 				if (result != ZE_RESULT_SUCCESS) {
 					return result;
 				}
-				printer->print(jsonObj.get());
+				if (oneJsonDocument) {
+					devicesJson.push_back(std::move(*jsonObj));
+				} else {
+					printer->print(jsonObj.get());
+				}
+			}
+			if (oneJsonDocument) {
+				for (auto &device : survDeviceList) {
+					devicesJson.push_back(stateDeviceEntry(device));
+				}
+				nlohmann::ordered_json output;
+				output["device_list"] = std::move(devicesJson);
+				printer->print(&output);
+			} else if (!survDeviceList.empty()) {
+				// A device listed for its state (e.g. survivability mode) named alongside them has only its state
+				// to show, in the same form as when it is named alone.
+				std::vector<devInfo> noDevices;
+				printDeviceInfo(noDevices, survDeviceList, printer, DEVICE_FUNCTION_TYPE_ALL);
 			}
 		} else {
 			// --dump / --listamcversions: commands accumulate into a shared object

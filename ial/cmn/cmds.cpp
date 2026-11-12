@@ -5,8 +5,11 @@
  */
 
 #include "cmds.h"
+#include "driver_util.h"
 #include <algorithm>
+#include <ranges>
 #include <string_view>
+#include <tuple>
 
 /**
  * @brief Prints formatted help information for command line interfaces
@@ -80,3 +83,40 @@ DriverMode cmds::driverMode(UNUSED std::span<char *const> cmdArgs) const { retur
  * @retval false  Default: a driver init failure ends the command.
  */
 bool cmds::recoversWithoutDriver(UNUSED std::span<char *const> cmdArgs) const { return false; }
+
+/**
+ * @brief Resolves a --device value against both the GPUs Level Zero reports and those listed for their state.
+ *
+ * Each comma-separated selector is looked up among the GPUs listed for their state (e.g. survivability
+ * mode) first, so one that names such a GPU is not also reported as an unknown device. A selector that
+ * names no GPU is reported and skipped.
+ *
+ * @param[in] sm   The driver that enumerated the GPUs.
+ * @param[in] spec Device indices or PCI addresses, comma-separated; empty selects every GPU.
+ *
+ * @return The selected GPUs of each kind, without duplicates, in the order they were named.
+ */
+SelectedDevices selectDevices(driver &sm, std::string_view spec)
+{
+	SelectedDevices selected;
+	if (spec.empty()) {
+		std::ignore = sm.findDevice("", &selected.normal);
+		sm.findSurvDevice("", &selected.survivability);
+		return selected;
+	}
+	for (const auto part : spec | std::views::split(',')) {
+		const std::string token{part.begin(), part.end()};
+		if (token.empty()) {
+			continue;
+		}
+		const std::size_t before = selected.survivability.size();
+		sm.findSurvDevice(token.c_str(), &selected.survivability);
+		if (selected.survivability.size() == before) {
+			// A selector that matches nothing is logged by findDevice.
+			std::ignore = sm.findDevice(token.c_str(), &selected.normal);
+		}
+	}
+	xpum::detail::deduplicateByIndex(selected.normal);
+	xpum::detail::deduplicateByIndex(selected.survivability);
+	return selected;
+}

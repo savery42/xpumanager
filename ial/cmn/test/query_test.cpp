@@ -684,9 +684,9 @@ TEST_SUITE("query layout")
 		CHECK(toJson(report)["gpus"][0]["fb_memory_usage"]["used"].is_null());
 	}
 
-	TEST_CASE("a survivability device shows only its state and recovery action")
+	TEST_CASE("a device listed for its state shows only that state and its recovery action")
 	{
-		const auto device = survivabilityNode("0000:05:00.0");
+		const auto device = deviceStateNode("0000:05:00.0", "survivability mode", "Firmware update and GPU reset");
 		const auto lines = linesOf(rendered(section("GPU", device.children)));
 		REQUIRE(lines.size() == 3);
 		CHECK(lines[1].ends_with(": survivability mode"));

@@ -182,6 +182,35 @@ ze_result_t driver::zesInitialize()
 }
 
 /**
+ * @brief Reads the state of a Sysman device from the device state extension.
+ *
+ * The state is a zes_device_ext_state_t chained to zesDeviceGetState(); see xpum::detail::knownDevState()
+ * for when it is known.
+ *
+ * @param[in] zesDev         Sysman handle of the device.
+ * @param[in] bdf            PCI address of the device, for the log.
+ * @param[in] computeSkipped The compute runtime initialized and does not report the device.
+ *
+ * @return The ZES_DEVICE_STATE_EXT_FLAG_* values of the device, or std::nullopt when the driver cannot tell.
+ */
+std::optional<zes_device_state_ext_flags_t> driver::readDevState(zes_device_handle_t zesDev, const std::string &bdf,
+																 bool computeSkipped)
+{
+	zes_device_ext_state_t extState{};
+	extState.stype = ZES_STRUCTURE_TYPE_DEVICE_EXT_STATE;
+	zes_device_state_t state{};
+	state.stype = ZES_STRUCTURE_TYPE_DEVICE_STATE;
+	state.pNext = &extState;
+	const ze_result_t result = zesDeviceGetState(zesDev, &state);
+	if (result != ZE_RESULT_SUCCESS) {
+		DBG("Failed to get the device state of {}: 0x{:X} ({})\n", bdf, result, l0_error_to_string(result));
+	} else {
+		DBG("Device state flags of {}: 0x{:X}\n", bdf, extState.flags);
+	}
+	return xpum::detail::knownDevState(result, extState.flags, computeSkipped);
+}
+
+/**
  * @brief Initializes the driver and its associated devices.
  *
  * This function initializes the Level Zero and ZES APIs, retrieves driver handles,
@@ -233,8 +262,6 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 	}
 
 	ze_result_t result;
-	// Temporary container to store zes devices which are not in survivability mode.
-	std::set<std::string> devBdfs{};
 
 	result = zesInitialize();
 	if (result != ZE_RESULT_SUCCESS) {
@@ -275,6 +302,8 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 		initialized = true;
 		return ZE_RESULT_SUCCESS;
 	}
+	// Whether the compute runtime came up, so a device it does not report was skipped by it.
+	const bool computeRuntimeUp = (result == ZE_RESULT_SUCCESS);
 	if (result == ZE_RESULT_SUCCESS) {
 		// Use local vector to avoid memset on non-trivial type
 		std::vector<devGroup> localDevs(driverCount);
@@ -337,7 +366,6 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 				// Initialize each device in the group
 				result = localDevs[i].dev[j].init(zeDrivers[i], zesDrivers[0], localDevs[i].zeDevices[j],
 												  totalZesDevices, +totalZesDevicesCount);
-				devBdfs.insert(localDevs[i].dev[j].getBDFStr());
 				if (result != ZE_RESULT_SUCCESS) {
 					ERR("Failed to initialize device for driver {}. Error code: {}\n", i, result);
 					return result;
@@ -352,39 +380,66 @@ ze_result_t driver::init(bool skipZeInit) // NOLINT(readability-function-cogniti
 		}
 	}
 
-	// Find zes devices which are in survivability mode.
-	if (devBdfs.size() < totalZesDevicesCount) {
-		svZesDevs.zesDriver = zesDrivers[0];
-		uint32_t survDevCount = static_cast<uint32_t>(totalZesDevicesCount - devBdfs.size());
-		svZesDevs.survDevices = new device[survDevCount];
-		svZesDevs.survDevCount = survDevCount;
-		// zesDeviceGet ignores ZE_ENABLE_PCI_ID_DEVICE_ORDER, so sort these by PCI address
-		// too: their device indices then follow PCI order like the others, which is also
-		// the order getLevelZeroGpuOrder() predicts without Level Zero.
-		struct SurvDevice
-		{
-			std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> address;
-			zes_device_handle_t handle;
-		};
-		std::vector<SurvDevice> survDevices;
-		for (uint32_t k = 0; k < totalZesDevicesCount; k++) {
-			zes_pci_properties_t pciProps{};
-			result = zesDevicePciGetProperties(totalZesDevices[k], &pciProps);
-			char bdfStr[BDF_STR_LEN];
-			snprintf(bdfStr, sizeof(bdfStr), "%04x:%02x:%02x.%01x", pciProps.address.domain, pciProps.address.bus,
-					 pciProps.address.device, pciProps.address.function);
-			if (!devBdfs.contains(bdfStr) && (survDevices.size() < survDevCount)) {
-				survDevices.push_back({{pciProps.address.domain, pciProps.address.bus, pciProps.address.device,
-										pciProps.address.function},
-									   totalZesDevices[k]});
+	// zesDeviceGet lists every device, so each one's Sysman state is read. Every device the compute runtime does
+	// not report, e.g. one in survivability mode, is listed after the reported devices, in PCI order, whatever its
+	// state: zesDeviceGet ignores ZE_ENABLE_PCI_ID_DEVICE_ORDER, and getLevelZeroGpuOrder(), which numbers devices
+	// without Level Zero for amc and config --reset, counts them too. A device the compute runtime reports keeps
+	// its place and gets its state, so it is not listed twice.
+	struct StateDevice
+	{
+		std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> address;
+		zes_device_handle_t handle;
+		zes_device_state_ext_flags_t state;
+	};
+	std::vector<StateDevice> stateDevices;
+	for (uint32_t k = 0; k < totalZesDevicesCount; k++) {
+		const zes_device_handle_t handle = totalZesDevices[k];
+		// A device the compute runtime reports was matched to its Sysman handle by UUID in device::init().
+		device *reportedDev = nullptr;
+		for (devGroup &dg : reportedGroups()) {
+			for (device &dev : dg.dev) {
+				if (dev.getZesDevice() == handle) {
+					reportedDev = &dev;
+				}
 			}
 		}
-		std::ranges::sort(survDevices, {}, &SurvDevice::address);
-		// Bounded by survDevCount too, the size of the array written: the push_back guard above
-		// keeps survDevices within it, but the static analyzer cannot see that.
-		for (uint32_t devIndex = 0; devIndex < survDevCount && devIndex < survDevices.size(); devIndex++) {
-			svZesDevs.survDevices[devIndex].smDevInit(zesDrivers[0], survDevices[devIndex].handle);
-			svZesDevs.survDevices[devIndex].setSurvivabilityMode(true);
+		if (reportedDev != nullptr) {
+			if (const auto state = readDevState(handle, reportedDev->getBDFStr(), false); state.has_value()) {
+				reportedDev->setDevState(*state);
+			}
+			continue;
+		}
+		// The PCI address identifies the device in every command, so one whose address cannot be read is left out.
+		zes_pci_properties_t pciProps{};
+		pciProps.stype = ZES_STRUCTURE_TYPE_PCI_PROPERTIES;
+		result = zesDevicePciGetProperties(handle, &pciProps);
+		if (result != ZE_RESULT_SUCCESS) {
+			ERR("Failed to read the PCI address of a device the compute runtime does not report: 0x{:X} ({}). The "
+				"device is not listed.\n",
+				result, l0_error_to_string(result));
+			continue;
+		}
+		char bdfStr[BDF_STR_LEN];
+		snprintf(bdfStr, sizeof(bdfStr), "%04x:%02x:%02x.%01x", pciProps.address.domain, pciProps.address.bus,
+				 pciProps.address.device, pciProps.address.function);
+		const std::optional<zes_device_state_ext_flags_t> state = readDevState(handle, bdfStr, computeRuntimeUp);
+		// A device whose state cannot be read is listed as "unknown".
+		if (!state.has_value()) {
+			ERR("Cannot tell the state of device {}: the Level Zero driver does not report it.\n", bdfStr);
+		}
+		stateDevices.push_back(
+			{{pciProps.address.domain, pciProps.address.bus, pciProps.address.device, pciProps.address.function},
+			 handle,
+			 state.value_or(0)});
+	}
+	if (!stateDevices.empty()) {
+		std::ranges::sort(stateDevices, {}, &StateDevice::address);
+		svZesDevs.zesDriver = zesDrivers[0];
+		svZesDevs.survDevCount = static_cast<uint32_t>(stateDevices.size());
+		svZesDevs.survDevices = new device[svZesDevs.survDevCount];
+		for (uint32_t devIndex = 0; devIndex < svZesDevs.survDevCount; devIndex++) {
+			svZesDevs.survDevices[devIndex].smDevInit(zesDrivers[0], stateDevices[devIndex].handle);
+			svZesDevs.survDevices[devIndex].setDevState(stateDevices[devIndex].state);
 		}
 	}
 
@@ -434,7 +489,14 @@ ze_result_t driver::smOnlyEnumerate()
 	ordered.reserve(totalZesDevicesCount);
 	for (uint32_t k = 0; k < totalZesDevicesCount; k++) {
 		zes_pci_properties_t pciProps{};
-		std::ignore = zesDevicePciGetProperties(totalZesDevices[k], &pciProps);
+		pciProps.stype = ZES_STRUCTURE_TYPE_PCI_PROPERTIES;
+		// A device whose PCI address cannot be read is not in the predicted order, so it is numbered last.
+		if (const ze_result_t pciResult = zesDevicePciGetProperties(totalZesDevices[k], &pciProps);
+			pciResult != ZE_RESULT_SUCCESS) {
+			ERR("Failed to read the PCI address of Sysman device {}: 0x{:X} ({}). It is numbered after the other "
+				"devices.\n",
+				k, pciResult, l0_error_to_string(pciResult));
+		}
 		char bdfStr[BDF_STR_LEN];
 		snprintf(bdfStr, sizeof(bdfStr), "%04x:%02x:%02x.%01x", pciProps.address.domain, pciProps.address.bus,
 				 pciProps.address.device, pciProps.address.function);
@@ -465,6 +527,11 @@ ze_result_t driver::smOnlyEnumerate()
 			return result;
 		}
 		DBG("Sysman-only device {}: {}\n", j, localDevs[0].dev[j].getBDFStr());
+		// The compute runtime is not up here, so a failed read is not taken as survivability mode.
+		if (const auto state = readDevState(ordered[j].handle, localDevs[0].dev[j].getBDFStr(), false);
+			state.has_value()) {
+			localDevs[0].dev[j].setDevState(*state);
+		}
 	}
 
 	// Copy from local vector to raw array for DLL boundary (matches init()).

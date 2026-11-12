@@ -52,6 +52,9 @@ private:
 	// Builds the device list from sysman handles only (no zeInit). Used by the
 	// config --reset path; see init(bool skipZeInit).
 	ze_result_t smOnlyEnumerate();
+	// Reads a Sysman device's ZES_DEVICE_STATE_EXT_FLAG_* values; std::nullopt when the driver cannot tell.
+	[[nodiscard]] static std::optional<zes_device_state_ext_flags_t>
+	readDevState(zes_device_handle_t zesDev, const std::string &bdf, bool computeSkipped);
 	bool initialized;
 	uint32_t driverCount;
 	uint32_t totalZesDevicesCount;

@@ -83,7 +83,8 @@ private:
 	uint32_t deviceCount;
 	devProps deviceProperties;
 	bool igpu;
-	bool survMode;
+	// ZES_DEVICE_STATE_EXT_FLAG_* values from the device state extension; 0, an unknown state, until it is read.
+	zes_device_state_ext_flags_t devState = 0;
 	bool pciOnly = false; // built by pciOnlyInit(): no Level Zero handles at all
 	int amc;
 	char drmDevPath[MAX_PATH];
@@ -147,8 +148,9 @@ public:
 	bool hasAmc() const { return amc != -1; }
 	std::string getDrmDevPath() const { return std::string(drmDevPath); }
 	bool isBDF(const char *bdf);
-	void setSurvivabilityMode(bool mode) { survMode = mode; }
-	bool isInSurvMode() { return survMode; }
+	void setDevState(zes_device_state_ext_flags_t flags) { devState = flags; }
+	[[nodiscard]] zes_device_state_ext_flags_t getDevState() const { return devState; }
+	bool isInSurvMode() { return (devState & ZES_DEVICE_STATE_EXT_FLAG_SURVIVABILITY) != 0; }
 	void addInfo(std::vector<devInfo> *devList, uint32_t devIndex);
 
 	ze_result_t init(ze_driver_handle_t zeD, zes_driver_handle_t zesD, ze_device_handle_t zeHdl,
@@ -165,6 +167,7 @@ public:
 	ze_result_t getSubdeviceProperties(uint32_t tileId, zes_subdevice_exp_properties_t &subdeviceProps);
 
 	pci *getPCI() { return &pciInstance; }
+	[[nodiscard]] zes_device_handle_t getZesDevice() const { return zesDevice; }
 	process *getProcess() { return &processInstance; }
 	ecc *getECC() { return &eccInstance; }
 	enginegroup *getEngineGroup() { return &enginegroupInstance; }
