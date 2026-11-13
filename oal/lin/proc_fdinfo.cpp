@@ -294,45 +294,70 @@ template <typename OnDrmFd> static bool forEachDrmFd(const std::string &procRoot
 	return true;
 }
 
+// Folds a second fd of the same DRM client into @p into. Both fdinfo files describe one client,
+// read a moment apart, so each figure keeps the later (larger) reading rather than the sum.
+static void mergeSameClient(DrmClient &into, const DrmClient &other)
+{
+	for (const auto &[eng, cnt] : other.engines) {
+		auto &dst = into.engines[eng];
+		dst.cycles = std::max(dst.cycles, cnt.cycles);
+		dst.totalCycles = std::max(dst.totalCycles, cnt.totalCycles);
+		dst.capacity = std::max(dst.capacity, cnt.capacity);
+		dst.hasBusy = dst.hasBusy || cnt.hasBusy;
+	}
+	into.vramBytes = std::max(into.vramBytes, other.vramBytes);
+	into.sharedVramBytes = std::max(into.sharedVramBytes, other.sharedVramBytes);
+	const auto resident = [](const ClientMemory &m) { return m.residentLocal + m.residentSystem; };
+	if (into.memory && other.memory && resident(*other.memory) > resident(*into.memory)) {
+		into.memory = other.memory;
+	}
+}
+
 /* Scan all open file descriptors of @p pid once and add a snapshot to @p out for each
- * device it is a DRM client of, merging the engine counters of that device's fds.
+ * device it is a DRM client of, adding up the counters of each DRM client it holds there once.
  * A device whose fds carry no engine counters gets no snapshot. */
 static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t wallNs, DeviceSnapshots &out)
 {
 	const std::string fdinfoDir = procRoot + "/" + std::to_string(pid) + "/fdinfo/";
-	std::unordered_map<std::string, ProcessSnapshot> perDevice;
+	// Several fds can name one client (dup, or an fd passed within the process), and each
+	// fdinfo repeats that client's counters, so fds are first grouped by drm-client-id.
+	std::unordered_map<std::string, std::vector<DrmClient>> perDevice;
 	forEachDrmFd(procRoot, pid, [&](const char *fdName) {
 		auto client = parseDrmFdinfo(fdinfoDir + fdName);
 		if (!client || client->engines.empty()) {
 			return;
 		}
-
-		auto [it, inserted] = perDevice.try_emplace(client->pdev);
-		ProcessSnapshot &snap = it->second;
-		if (inserted) {
-			snap.pid = pid;
-			snap.wallNs = wallNs;
-		}
-		for (auto &[eng, cnt] : client->engines) {
-			auto &dst = snap.engines[eng];
-			dst.cycles += cnt.cycles;
-			dst.totalCycles = std::max(dst.totalCycles, cnt.totalCycles);
-			dst.hasBusy = dst.hasBusy || cnt.hasBusy;
-		}
-		snap.vramBytes += client->vramBytes;
-		snap.sharedVramBytes += client->sharedVramBytes;
-		if (client->memory) {
-			const auto resident = [](const ClientMemory &m) { return m.residentLocal + m.residentSystem; };
-			const auto same = std::ranges::find(snap.clients, client->memory->clientId, &ClientMemory::clientId);
-			if (same == snap.clients.end()) {
-				snap.clients.push_back(*client->memory);
-			} else if (resident(*client->memory) > resident(*same)) {
-				*same = *client->memory;
-			}
+		auto &clients = perDevice[client->pdev];
+		const auto same =
+			client->memory ? std::ranges::find_if(clients,
+												  [&](const DrmClient &c) {
+													  return c.memory && c.memory->clientId == client->memory->clientId;
+												  })
+						   : clients.end();
+		if (same == clients.end()) {
+			clients.push_back(std::move(*client));
+		} else {
+			mergeSameClient(*same, *client);
 		}
 	});
 
-	for (auto &[pdev, snap] : perDevice) {
+	for (auto &[pdev, clients] : perDevice) {
+		ProcessSnapshot snap;
+		snap.pid = pid;
+		snap.wallNs = wallNs;
+		for (const auto &client : clients) {
+			for (const auto &[eng, cnt] : client.engines) {
+				auto &dst = snap.engines[eng];
+				dst.cycles += cnt.cycles;
+				dst.totalCycles = std::max(dst.totalCycles, cnt.totalCycles);
+				dst.hasBusy = dst.hasBusy || cnt.hasBusy;
+			}
+			snap.vramBytes += client.vramBytes;
+			snap.sharedVramBytes += client.sharedVramBytes;
+			if (client.memory) {
+				snap.clients.push_back(*client.memory);
+			}
+		}
 		out[pdev].push_back(std::move(snap));
 	}
 }

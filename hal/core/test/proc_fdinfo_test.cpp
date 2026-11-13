@@ -167,6 +167,30 @@ TEST_CASE("captureAll: fds of one process on one device are merged")
 	CHECK(ccs.totalCycles == 1000);
 }
 
+TEST_CASE("captureAll: fds that share one DRM client count it once")
+{
+	const TempDir proc;
+	// fds 5 and 6 are one client (a dup), read a moment apart; fd 7 is a second client.
+	addPidClient(proc.path, "100", "5", "xe", BDF,
+				 "drm-client-id:\t3\ndrm-cycles-ccs:\t100\ndrm-total-cycles-ccs:\t900\n"
+				 "drm-total-vram0:\t4 MiB\ndrm-resident-vram0:\t4 MiB\n");
+	addPidClient(proc.path, "100", "6", "xe", BDF,
+				 "drm-client-id:\t3\ndrm-cycles-ccs:\t120\ndrm-total-cycles-ccs:\t1000\n"
+				 "drm-total-vram0:\t4 MiB\ndrm-resident-vram0:\t4 MiB\n");
+	addPidClient(proc.path, "100", "7", "xe", BDF,
+				 "drm-client-id:\t4\ndrm-cycles-ccs:\t30\ndrm-total-cycles-ccs:\t1000\n"
+				 "drm-total-vram0:\t1 MiB\ndrm-resident-vram0:\t1 MiB\n");
+
+	const auto all = fdinfo::captureAll(proc.path.string());
+	const auto &snaps = fdinfo::snapshotsFor(all, BDF);
+	REQUIRE(snaps.size() == 1);
+	const auto &ccs = snaps[0].engines.at("ccs");
+	CHECK(ccs.cycles == 120 + 30); // client 3's later reading, not 100 + 120
+	CHECK(ccs.totalCycles == 1000);
+	CHECK(snaps[0].vramBytes == 5ULL * 1024 * 1024);
+	CHECK(snaps[0].clients.size() == 2);
+}
+
 TEST_CASE("captureAll: non-DRM fds and clients without engine keys are skipped")
 {
 	const TempDir proc;
