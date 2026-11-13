@@ -164,24 +164,35 @@ TEST_CASE("cpuPercent counts one busy core as 100% and rejects readings it canno
 	CHECK_FALSE(cpuPercent(before, {.cpuTime = 1s, .at = t0 + 1s}).has_value());
 }
 
-TEST_CASE("procTableLayout drops render, then copy, then GMem%, then Runtime before the name gets too narrow")
+TEST_CASE("procTableLayout drops render, copy, GMem%, ShrMiB, SysMiB, then Runtime before the name gets too narrow")
 {
-	const ProcTableLayout wide = procTableLayout(140);
+	const int allOptional = 3 * OPTIONAL_COL_WIDTH + SHR_COL_WIDTH + SYS_COL_WIDTH + RUNTIME_COL_WIDTH;
+	const ProcTableLayout wide = procTableLayout(160);
 	CHECK(wide == ProcTableLayout{.showRender = true,
 								  .showCopy = true,
 								  .showGpuMemPercent = true,
+								  .showShared = true,
+								  .showSystem = true,
 								  .showRuntime = true,
-								  .nameWidth = 140 - PROC_FIXED_WIDTH - 3 * OPTIONAL_COL_WIDTH - RUNTIME_COL_WIDTH});
+								  .nameWidth = 160 - PROC_FIXED_WIDTH - allOptional});
 
 	// Each threshold is the narrowest width that still keeps the name at MIN_NAME_WIDTH.
 	const int onlyRuntime = PROC_FIXED_WIDTH + RUNTIME_COL_WIDTH + MIN_NAME_WIDTH;
 	CHECK(procTableLayout(onlyRuntime) == ProcTableLayout{.showRender = false,
 														  .showCopy = false,
 														  .showGpuMemPercent = false,
+														  .showShared = false,
+														  .showSystem = false,
 														  .showRuntime = true,
 														  .nameWidth = MIN_NAME_WIDTH});
 	CHECK_FALSE(procTableLayout(onlyRuntime - 1).showRuntime);
-	const int withGpuMem = onlyRuntime + OPTIONAL_COL_WIDTH;
+	const int withSystem = onlyRuntime + SYS_COL_WIDTH;
+	CHECK(procTableLayout(withSystem).showSystem);
+	CHECK_FALSE(procTableLayout(withSystem - 1).showSystem);
+	const int withShared = withSystem + SHR_COL_WIDTH;
+	CHECK(procTableLayout(withShared).showShared);
+	CHECK_FALSE(procTableLayout(withShared - 1).showShared);
+	const int withGpuMem = withShared + OPTIONAL_COL_WIDTH;
 	CHECK(procTableLayout(withGpuMem).showGpuMemPercent);
 	CHECK_FALSE(procTableLayout(withGpuMem - 1).showGpuMemPercent);
 	CHECK(procTableLayout(withGpuMem + OPTIONAL_COL_WIDTH).showCopy);
@@ -192,6 +203,8 @@ TEST_CASE("procTableLayout drops render, then copy, then GMem%, then Runtime bef
 	CHECK(standard == ProcTableLayout{.showRender = false,
 									  .showCopy = false,
 									  .showGpuMemPercent = false,
+									  .showShared = false,
+									  .showSystem = false,
 									  .showRuntime = false,
 									  .nameWidth = 80 - PROC_FIXED_WIDTH});
 
@@ -322,4 +335,25 @@ TEST_CASE("runtimeLabel puts the APIs for the engines in use first")
 	runtime::ProcessRuntime onlyFramework;
 	onlyFramework.frameworks = 1U << static_cast<unsigned>(runtime::Framework::OpenVino);
 	CHECK(runtimeLabel(onlyFramework, 0) == "OV");
+}
+
+namespace {
+
+constexpr uint64_t MiB = 1024ULL * 1024ULL;
+
+} // namespace
+
+TEST_CASE("sortMergedList by memory uses the attributed figure, and memSize where there is none")
+{
+	const std::vector<std::vector<psInfo>> lists{{makeProc(1, 900 * 1024), makeProc(2, 100 * 1024)}};
+	// pid 1's memSize counts buffers it shares; only 50 MiB is its own.
+	const std::vector<fdinfo::ProcessMemoryMap> memory{
+		{{1, fdinfo::ProcessMemory{.gpu = 50 * MiB, .shared = 850 * MiB, .system = std::nullopt}}}};
+	auto merged = buildMergedList(lists, {}, memory);
+	REQUIRE(merged[0].mem.has_value());
+	CHECK_FALSE(merged[1].mem.has_value());
+	sortMergedList(merged, SortBy::Memory);
+	CHECK(merged[0].proc->processId == 2);
+	CHECK(merged[0].gpuMemKiB() == 100 * 1024);
+	CHECK(merged[1].gpuMemKiB() == 50 * 1024);
 }

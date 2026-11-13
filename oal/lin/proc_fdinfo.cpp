@@ -83,7 +83,52 @@ struct DrmClient
 	std::unordered_map<std::string, EngineCounters> engines;
 	uint64_t vramBytes = 0;
 	uint64_t sharedVramBytes = 0;
+	std::optional<ClientMemory> memory; ///< nullopt without a drm-client-id line
 };
+
+enum class MemRegion : uint8_t
+{
+	Local,
+	System,
+	Other,
+};
+
+// Where a drm-<stat>-<region> key's memory lives. i915 names regions local0 and system0, xe
+// vram0, system and gtt; stolen memory (firmware-reserved) is neither, and is left out.
+static MemRegion memRegionOf(std::string_view region) noexcept
+{
+	if (region.starts_with("vram") || region.starts_with("local")) {
+		return MemRegion::Local;
+	}
+	if (region.starts_with("system") || region == "gtt") {
+		return MemRegion::System;
+	}
+	return MemRegion::Other;
+}
+
+// Adds one drm-resident-* or drm-shared-* line to @p mem. drm-total-* lines only mark a local
+// region as present: they include buffers that are not resident.
+static void accumulateClientMemory(std::string_view key, uint64_t bytes, ClientMemory &mem) noexcept
+{
+	static constexpr std::string_view residentKey = "drm-resident-";
+	static constexpr std::string_view sharedKey = "drm-shared-";
+	static constexpr std::string_view totalKey = "drm-total-";
+	if (key.starts_with(totalKey)) {
+		mem.hasLocal = mem.hasLocal || memRegionOf(key.substr(totalKey.size())) == MemRegion::Local;
+		return;
+	}
+	const bool resident = key.starts_with(residentKey);
+	if (!resident && !key.starts_with(sharedKey)) {
+		return;
+	}
+	const MemRegion region = memRegionOf(key.substr(resident ? residentKey.size() : sharedKey.size()));
+	if (region == MemRegion::Local) {
+		mem.hasLocal = true;
+		(resident ? mem.residentLocal : mem.sharedLocal) += bytes;
+	} else if (region == MemRegion::System) {
+		(resident ? mem.residentSystem : mem.sharedSystem) += bytes;
+	}
+}
 
 // A memory figure from fdinfo, "<n>" or "<n> KiB|MiB|GiB", in bytes.
 static uint64_t parseMemBytes(std::string_view val) noexcept
@@ -125,6 +170,8 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 	bool isDrm = false;
 	uint64_t vramBytes = 0;
 	uint64_t sharedVramBytes = 0;
+	ClientMemory memory;
+	bool hasClientId = false;
 
 	for (std::string line; std::getline(fin, line);) {
 		// All DRM fdinfo fields follow "key:\tvalue" format.
@@ -149,10 +196,18 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 			isDrm = true;
 		} else if (key == pdevKey) {
 			pdev = std::string{val};
+		} else if (key == "drm-client-id") {
+			const auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), memory.clientId);
+			hasClientId = ec == std::errc{} && ptr == val.data() + val.size();
 		} else if (key.starts_with("drm-total-vram")) {
 			vramBytes += parseMemBytes(val);
+			accumulateClientMemory(key, 0, memory);
 		} else if (key.starts_with("drm-shared-vram")) {
 			sharedVramBytes += parseMemBytes(val);
+			accumulateClientMemory(key, parseMemBytes(val), memory);
+		} else if (key.starts_with("drm-resident-") || key.starts_with("drm-shared-") ||
+				   (key.starts_with("drm-total-") && !key.starts_with("drm-total-cycles-"))) {
+			accumulateClientMemory(key, parseMemBytes(val), memory);
 		} else if (const auto ek = parseEngineKey(key)) {
 			// i915 never emits Total, so its totalCycles stays 0: the wall-clock sentinel.
 			EngineCounters &c = engines[ek->engine];
@@ -174,7 +229,8 @@ static std::optional<DrmClient> parseDrmFdinfo(const std::string &path)
 	if (!isDrm) {
 		return std::nullopt;
 	}
-	return DrmClient{std::move(pdev), std::move(engines), vramBytes, sharedVramBytes};
+	return DrmClient{std::move(pdev), std::move(engines), vramBytes, sharedVramBytes,
+					 hasClientId ? std::optional{memory} : std::nullopt};
 }
 
 // Parse one /proc/<pid>/fdinfo/<fd> file.
@@ -265,6 +321,15 @@ static void captureOnePidAll(uint32_t pid, const std::string &procRoot, uint64_t
 		}
 		snap.vramBytes += client->vramBytes;
 		snap.sharedVramBytes += client->sharedVramBytes;
+		if (client->memory) {
+			const auto resident = [](const ClientMemory &m) { return m.residentLocal + m.residentSystem; };
+			const auto same = std::ranges::find(snap.clients, client->memory->clientId, &ClientMemory::clientId);
+			if (same == snap.clients.end()) {
+				snap.clients.push_back(*client->memory);
+			} else if (resident(*client->memory) > resident(*same)) {
+				*same = *client->memory;
+			}
+		}
 	});
 
 	for (auto &[pdev, snap] : perDevice) {
@@ -346,6 +411,41 @@ const std::vector<ProcessSnapshot> &snapshotsFor(const DeviceSnapshots &all, std
 	static const std::vector<ProcessSnapshot> none;
 	const auto it = all.find(std::string{pciAddr});
 	return it == all.end() ? none : it->second;
+}
+
+ProcessMemoryMap processMemory(const std::vector<ProcessSnapshot> &snaps)
+{
+	std::vector<const ProcessSnapshot *> byPid;
+	byPid.reserve(snaps.size());
+	for (const auto &snap : snaps) {
+		byPid.push_back(&snap);
+	}
+	std::ranges::sort(byPid, {}, &ProcessSnapshot::pid);
+
+	const auto minus = [](uint64_t a, uint64_t b) { return a > b ? a - b : 0; };
+	ProcessMemoryMap out;
+	std::unordered_set<uint64_t> counted;
+	for (const auto *snap : byPid) {
+		std::optional<ProcessMemory> mem;
+		for (const auto &c : snap->clients) {
+			if (!counted.insert(c.clientId).second) {
+				continue;
+			}
+			ProcessMemory &m = mem ? *mem : mem.emplace();
+			if (c.hasLocal) {
+				m.gpu += minus(c.residentLocal, c.sharedLocal);
+				m.shared += c.sharedLocal;
+				m.system = m.system.value_or(0) + c.residentSystem;
+			} else {
+				m.gpu += minus(c.residentSystem, c.sharedSystem);
+				m.shared += c.sharedSystem;
+			}
+		}
+		if (mem) {
+			out[snap->pid] = *mem;
+		}
+	}
+	return out;
 }
 
 PidUtilMap delta(const std::vector<ProcessSnapshot> &before, // NOLINT(bugprone-easily-swappable-parameters)

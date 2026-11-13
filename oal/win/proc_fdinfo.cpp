@@ -55,6 +55,8 @@ const std::vector<ProcessSnapshot> &snapshotsFor(const DeviceSnapshots & /*all*/
 	return none;
 }
 
+ProcessMemoryMap processMemory(const std::vector<ProcessSnapshot> & /*snaps*/) { return {}; }
+
 PidUtilMap delta(const std::vector<ProcessSnapshot> & /*before*/, const std::vector<ProcessSnapshot> & /*after*/)
 {
 	return {};

@@ -232,6 +232,129 @@ TEST_CASE("captureAll: VRAM and shared VRAM are summed over the fds, in bytes")
 	CHECK(snaps[0].sharedVramBytes == 2 * 1024 * 1024);
 }
 
+TEST_CASE("captureAll: xe client memory is split into VRAM and system RAM, resident and shared")
+{
+	const TempDir proc;
+	addPidClient(proc.path, "901", "7", "xe", BDF,
+				 "drm-client-id:\t19\n"
+				 "drm-total-system:\t0\ndrm-shared-system:\t0\ndrm-resident-system:\t8 KiB\n"
+				 "drm-total-gtt:\t1224376 KiB\ndrm-shared-gtt:\t4 KiB\ndrm-resident-gtt:\t1224376 KiB\n"
+				 "drm-total-vram0:\t27586192 KiB\ndrm-shared-vram0:\t2 MiB\ndrm-resident-vram0:\t27586000 KiB\n"
+				 "drm-total-stolen:\t64 MiB\ndrm-resident-stolen:\t64 MiB\n"
+				 "drm-cycles-ccs:\t5\ndrm-total-cycles-ccs:\t9\n");
+	const auto all = fdinfo::captureAll(proc.path.string());
+	const auto &snaps = fdinfo::snapshotsFor(all, BDF);
+	REQUIRE(snaps.size() == 1);
+	REQUIRE(snaps[0].clients.size() == 1);
+	CHECK(snaps[0].clients[0] == fdinfo::ClientMemory{.clientId = 19,
+													  .hasLocal = true,
+													  .residentLocal = 27586000ULL * 1024,
+													  .sharedLocal = 2ULL * 1024 * 1024,
+													  .residentSystem = (1224376ULL + 8) * 1024,
+													  .sharedSystem = 4 * 1024});
+	CHECK(snaps[0].vramBytes == 27586192ULL * 1024); // unchanged: drm-total-vram*
+}
+
+TEST_CASE("captureAll: an i915 integrated client has no local region, even listed at zero")
+{
+	const TempDir proc;
+	addPidClient(proc.path, "1368", "38", "i915", BDF,
+				 "drm-client-id:\t13\ndrm-total-system0:\t33552 KiB\ndrm-shared-system0:\t31232 KiB\n"
+				 "drm-resident-system0:\t33552 KiB\ndrm-total-stolen-system0:\t0\n"
+				 "drm-resident-stolen-system0:\t0\ndrm-engine-render:\t10 ns\n");
+	addPidClient(proc.path, "1400", "4", "i915", BDF,
+				 "drm-client-id:\t20\ndrm-total-local0:\t0\ndrm-resident-local0:\t0\ndrm-engine-render:\t1 ns\n");
+	const auto all = fdinfo::captureAll(proc.path.string());
+	const auto &snaps = fdinfo::snapshotsFor(all, BDF);
+	CHECK(snapOf(snaps, 1368).clients ==
+		  std::vector<fdinfo::ClientMemory>{
+			  {.clientId = 13, .residentSystem = 33552ULL * 1024, .sharedSystem = 31232ULL * 1024}});
+	REQUIRE(snapOf(snaps, 1400).clients.size() == 1);
+	CHECK(snapOf(snaps, 1400).clients[0].hasLocal);
+}
+
+TEST_CASE("captureAll: fds of one client are one client, with the largest figures")
+{
+	const TempDir proc;
+	addPidClient(proc.path, "100", "5", "xe", BDF,
+				 "drm-client-id:\t3\ndrm-resident-vram0:\t1 MiB\ndrm-cycles-ccs:\t1\n");
+	addPidClient(proc.path, "100", "6", "xe", BDF,
+				 "drm-client-id:\t3\ndrm-resident-vram0:\t2 MiB\ndrm-cycles-ccs:\t1\n");
+	addPidClient(proc.path, "100", "7", "xe", BDF,
+				 "drm-client-id:\t4\ndrm-resident-vram0:\t4 KiB\ndrm-cycles-ccs:\t1\n");
+	addPidClient(proc.path, "100", "8", "xe", BDF, "drm-resident-vram0:\t8 MiB\ndrm-cycles-ccs:\t1\n");
+	const auto all = fdinfo::captureAll(proc.path.string());
+	const auto &clients = fdinfo::snapshotsFor(all, BDF).at(0).clients;
+	REQUIRE(clients.size() == 2); // the fd with no drm-client-id is not a client figure
+	const auto three = std::ranges::find(clients, 3U, &fdinfo::ClientMemory::clientId);
+	REQUIRE(three != clients.end());
+	CHECK(three->residentLocal == 2ULL * 1024 * 1024);
+}
+
+namespace {
+
+fdinfo::ProcessSnapshot snapWith(uint32_t pid, std::vector<fdinfo::ClientMemory> clients)
+{
+	fdinfo::ProcessSnapshot snap;
+	snap.pid = pid;
+	snap.clients = std::move(clients);
+	return snap;
+}
+
+constexpr uint64_t MiB = 1024ULL * 1024ULL;
+
+} // namespace
+
+TEST_CASE("processMemory on a discrete GPU: private VRAM, shared VRAM and system RAM apart")
+{
+	const std::vector<fdinfo::ProcessSnapshot> snaps{
+		snapWith(901, {{.clientId = 17, .hasLocal = true},
+					   {.clientId = 19,
+						.hasLocal = true,
+						.residentLocal = 26939 * MiB,
+						.sharedLocal = 0,
+						.residentSystem = 1195 * MiB,
+						.sharedSystem = 0}}),
+		snapWith(42, {{.clientId = 5, .hasLocal = true, .residentLocal = 300 * MiB, .sharedLocal = 100 * MiB}})};
+	const auto mem = fdinfo::processMemory(snaps);
+	CHECK(mem.at(901) == fdinfo::ProcessMemory{.gpu = 26939 * MiB, .shared = 0, .system = 1195 * MiB});
+	CHECK(mem.at(42) == fdinfo::ProcessMemory{.gpu = 200 * MiB, .shared = 100 * MiB, .system = 0});
+}
+
+TEST_CASE("processMemory on an integrated GPU counts system memory as GPU memory and shows no system figure")
+{
+	const std::vector<fdinfo::ProcessSnapshot> snaps{
+		snapWith(1368, {{.clientId = 13, .residentSystem = 33552 * 1024, .sharedSystem = 31232 * 1024}})};
+	const auto mem = fdinfo::processMemory(snaps);
+	CHECK(mem.at(1368) ==
+		  fdinfo::ProcessMemory{.gpu = (33552 - 31232) * 1024, .shared = 31232 * 1024, .system = std::nullopt});
+}
+
+TEST_CASE("processMemory credits a client held by several processes to the lowest pid, once")
+{
+	const fdinfo::ClientMemory inherited{.clientId = 7, .hasLocal = true, .residentLocal = 64 * MiB};
+	const std::vector<fdinfo::ProcessSnapshot> snaps{
+		snapWith(300, {inherited, {.clientId = 8, .hasLocal = true, .residentLocal = 2 * MiB}}),
+		snapWith(200, {inherited})};
+	const auto mem = fdinfo::processMemory(snaps);
+	CHECK(mem.at(200).gpu == 64 * MiB);
+	CHECK(mem.at(300).gpu == 2 * MiB);
+
+	// A process whose only client is credited elsewhere has no entry of its own.
+	const auto onlyInherited = fdinfo::processMemory(std::vector{snapWith(1, {inherited}), snapWith(2, {inherited})});
+	CHECK(onlyInherited.contains(1));
+	CHECK_FALSE(onlyInherited.contains(2));
+}
+
+TEST_CASE("processMemory clamps a client whose shared buffers exceed what is resident")
+{
+	const auto mem = fdinfo::processMemory(
+		std::vector{snapWith(9, {{.clientId = 1, .residentSystem = 4 * MiB, .sharedSystem = 6 * MiB}})});
+	CHECK(mem.at(9).gpu == 0);
+	CHECK(mem.at(9).shared == 6 * MiB);
+	CHECK(fdinfo::processMemory(std::vector{snapWith(10, {})}).empty());
+}
+
 TEST_CASE("walk: records every process it visited, in order")
 {
 	const TempDir proc;

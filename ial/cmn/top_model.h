@@ -11,6 +11,7 @@
 
 #include "cmd_ps.h"
 #include "metrics_registry.h"
+#include "proc_fdinfo.h"
 #include "process_runtime.h"
 #include "utility/compat/format.h"
 #include "utility/units/units.h"
@@ -211,17 +212,29 @@ struct MergedProc
 	int gpuIdx;
 	const psInfo *proc;
 	HostUsage host{};
+	std::optional<fdinfo::ProcessMemory> mem{}; ///< nullopt: fdinfo had no client figures, use psInfo::memSize
+
+	/// GPU memory in KiB: fdinfo::ProcessMemory::gpu when known, else what the process list reported.
+	[[nodiscard]] uint64_t gpuMemKiB() const noexcept { return mem ? mem->gpu / 1024 : proc->memSize; }
 };
 
 /// Every process row across GPUs; a process on two GPUs is two rows sharing its host usage.
+/// @p memory holds each device's fdinfo::processMemory(), in the order of @p lists.
 [[nodiscard]] inline std::vector<MergedProc> buildMergedList(const std::vector<std::vector<psInfo>> &lists,
-															 const HostUsageMap &host = {})
+															 const HostUsageMap &host = {},
+															 const std::vector<fdinfo::ProcessMemoryMap> &memory = {})
 {
 	std::vector<MergedProc> out;
-	for (int i = 0; i < static_cast<int>(lists.size()); ++i) {
-		for (const auto &p : lists[static_cast<std::size_t>(i)]) {
+	for (std::size_t i = 0; i < lists.size(); ++i) {
+		for (const auto &p : lists[i]) {
 			const auto it = host.find(p.processId);
-			out.push_back({i, &p, it != host.end() ? it->second : HostUsage{}});
+			std::optional<fdinfo::ProcessMemory> mem;
+			if (i < memory.size()) {
+				if (const auto m = memory[i].find(p.processId); m != memory[i].end()) {
+					mem = m->second;
+				}
+			}
+			out.push_back({static_cast<int>(i), &p, it != host.end() ? it->second : HostUsage{}, mem});
 		}
 	}
 	return out;
@@ -232,8 +245,7 @@ inline void sortMergedList(std::vector<MergedProc> &list, SortBy sortBy)
 {
 	switch (sortBy) {
 	case SortBy::Memory:
-		std::ranges::sort(list,
-						  [](const MergedProc &a, const MergedProc &b) { return a.proc->memSize > b.proc->memSize; });
+		std::ranges::sort(list, [](const MergedProc &a, const MergedProc &b) { return a.gpuMemKiB() > b.gpuMemKiB(); });
 		break;
 	case SortBy::Compute:
 		std::ranges::sort(
@@ -259,6 +271,8 @@ inline constexpr int COL_TYPE        = 7;
 inline constexpr int COL_GPU_MEM     = 7;
 inline constexpr int COL_PERCENT     = 6;
 inline constexpr int COL_HOST_MEM    = 7;
+inline constexpr int COL_SHR_MEM     = 7;
+inline constexpr int COL_SYS_MEM     = 7;
 inline constexpr int COL_RUNTIME     = 12;
 inline constexpr int MIN_NAME_WIDTH  = 8;
 // clang-format on
@@ -268,6 +282,9 @@ inline constexpr int PROC_FIXED_WIDTH =
 	PROC_INDENT + COL_PID + COL_GPU + COL_TYPE + COL_GPU_MEM + 3 * COL_PERCENT + COL_HOST_MEM + 8 * PROC_GAP;
 /// A percentage column the table can drop: Rnd%, Cpy% or GMem%.
 inline constexpr int OPTIONAL_COL_WIDTH = COL_PERCENT + PROC_GAP;
+/// The ShrMiB and SysMiB columns, which the table can drop too.
+inline constexpr int SHR_COL_WIDTH = COL_SHR_MEM + PROC_GAP;
+inline constexpr int SYS_COL_WIDTH = COL_SYS_MEM + PROC_GAP;
 /// The Runtime column, which the table can drop too.
 inline constexpr int RUNTIME_COL_WIDTH = COL_RUNTIME + PROC_GAP;
 
@@ -276,6 +293,8 @@ struct ProcTableLayout
 	bool showRender = true;
 	bool showCopy = true;
 	bool showGpuMemPercent = true;
+	bool showShared = true;
+	bool showSystem = true;
 	bool showRuntime = true;
 	int nameWidth = MIN_NAME_WIDTH;
 
@@ -286,9 +305,9 @@ struct ProcTableLayout
  * @brief Which process columns fit in @p cols.
  *
  * Optional columns go in this order until the name has MIN_NAME_WIDTH: Rnd% and Cpy%, which
- * are usually idle, then GMem%, which GPUMiB already approximates, then Runtime, which the
- * detail view still shows. On a terminal too narrow even then, the name keeps MIN_NAME_WIDTH
- * and the row overflows.
+ * are usually idle, then GMem%, which GPUMiB already approximates, then ShrMiB and SysMiB,
+ * then Runtime, which the detail view still shows. On a terminal too narrow even then, the
+ * name keeps MIN_NAME_WIDTH and the row overflows.
  */
 [[nodiscard]] inline ProcTableLayout procTableLayout(int cols) noexcept
 {
@@ -298,9 +317,11 @@ struct ProcTableLayout
 		int width;
 	};
 	ProcTableLayout table;
-	const std::array<Optional, 4> dropOrder{{{&ProcTableLayout::showRender, OPTIONAL_COL_WIDTH},
+	const std::array<Optional, 6> dropOrder{{{&ProcTableLayout::showRender, OPTIONAL_COL_WIDTH},
 											 {&ProcTableLayout::showCopy, OPTIONAL_COL_WIDTH},
 											 {&ProcTableLayout::showGpuMemPercent, OPTIONAL_COL_WIDTH},
+											 {&ProcTableLayout::showShared, SHR_COL_WIDTH},
+											 {&ProcTableLayout::showSystem, SYS_COL_WIDTH},
 											 {&ProcTableLayout::showRuntime, RUNTIME_COL_WIDTH}}};
 	int room = cols - PROC_FIXED_WIDTH;
 	for (const auto &column : dropOrder) {

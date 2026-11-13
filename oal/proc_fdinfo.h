@@ -61,6 +61,25 @@ struct EngineCounters
 	bool hasBusy = false;	  ///< a busy counter was reported, so cycles == 0 means idle, not unknown
 };
 
+/**
+ * @brief One DRM client's memory, by where it lives, in bytes.
+ *
+ * From drm-resident-<region> (what is in that memory now) and drm-shared-<region> (buffers
+ * other clients also hold, such as a window a compositor imports). Device-local regions are
+ * vram* and local*; system memory is system* and gtt. Stolen and unknown regions are left out.
+ */
+struct ClientMemory
+{
+	uint64_t clientId = 0;
+	bool hasLocal = false; ///< the driver lists a device-local region, even at 0: a discrete GPU
+	uint64_t residentLocal = 0;
+	uint64_t sharedLocal = 0;
+	uint64_t residentSystem = 0;
+	uint64_t sharedSystem = 0;
+
+	bool operator==(const ClientMemory &) const = default;
+};
+
 // All engine counters for one process on one device at one point in time.
 struct ProcessSnapshot
 {
@@ -71,6 +90,9 @@ struct ProcessSnapshot
 	/// what zesDeviceProcessesGetState() reports as memSize and sharedSize.
 	uint64_t vramBytes = 0;
 	uint64_t sharedVramBytes = 0;
+	/// One entry per drm-client-id the process holds on the device. Several fds can share one
+	/// client (dup, fd passing); the client is listed once, with the figures of its largest fd.
+	std::vector<ClientMemory> clients;
 };
 
 /// Per-engine utilisation map for a single process: engine_name → 0-100 %
@@ -141,6 +163,39 @@ struct Walk
  * @retval empty vector the device had no DRM client with engine counters
  */
 [[nodiscard]] const std::vector<ProcessSnapshot> &snapshotsFor(const DeviceSnapshots &all, std::string_view pciAddr);
+
+/// A process's GPU memory on one device, in bytes.
+struct ProcessMemory
+{
+	/// Resident in the GPU's own memory and held by no other process: VRAM on a discrete GPU,
+	/// system memory on an integrated one.
+	uint64_t gpu = 0;
+	/// Buffers in that memory it shares with other processes, such as windows a compositor
+	/// imports. They are counted under every process that holds them, so they are kept apart.
+	uint64_t shared = 0;
+	/// Discrete GPU only: its buffers resident in system RAM, shared ones included.
+	std::optional<uint64_t> system{};
+
+	bool operator==(const ProcessMemory &) const = default;
+};
+
+/// ProcessMemory per pid on one device.
+using ProcessMemoryMap = std::unordered_map<uint32_t, ProcessMemory>;
+
+/**
+ * @brief Each process's GPU memory on one device, from its DRM clients.
+ *
+ * A client held by several processes (inherited across fork, or passed over a socket) is
+ * counted once, for the lowest pid, which is usually the parent. Shared buffers are subtracted
+ * from the resident figure: fdinfo's shared figure is their size wherever they are, so a
+ * client's GPU memory is clamped at zero rather than going negative.
+ *
+ * @param[in] snaps  The device's snapshots, from snapshotsFor().
+ *
+ * @return An entry for each pid with at least one client it is credited with; a pid whose
+ *         fdinfo has no drm-client-id (an older kernel) has none. Empty on non-Linux platforms.
+ */
+[[nodiscard]] ProcessMemoryMap processMemory(const std::vector<ProcessSnapshot> &snaps);
 
 /// Compute per-process, per-engine utilisation % from two snapshots.
 /// Returns: pid → (engine_name → 0-100 %)
