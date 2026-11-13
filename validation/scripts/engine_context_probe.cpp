@@ -446,7 +446,9 @@ struct Config
 		l0InitAndAlloc(s, cfg.deviceIndex, cfg.bytes);
 		if (cfg.syncFd >= 0) {
 			const char ready = 'R';
-			(void)write(cfg.syncFd, &ready, 1);
+			if (write(cfg.syncFd, &ready, 1) != 1) {
+				std::cerr << "idler: could not signal that it is ready\n";
+			}
 			close(cfg.syncFd);
 		}
 		waitUntilStop(cfg.duration);

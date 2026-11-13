@@ -7,6 +7,8 @@
 #include "cmds.h"
 #include <CLI/CLI.hpp>
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
 #include <string_view>
 
 /**
@@ -19,6 +21,18 @@
  * @param helpList Vector of help command structures containing formatted help text
  * @param helpType Type of help to display (SHORT_HELP for brief, FULL_HELP for detailed)
  */
+helpCmd::helpCmd() = default;
+
+helpCmd::helpCmd(GAP gap, const char *fmt, ...) : char_gap(static_cast<int>(gap))
+{
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(line, sizeof(line), fmt, args);
+	va_end(args);
+}
+
+helpCmd::helpCmd(GAP gap) : char_gap(static_cast<int>(gap)) {}
+
 void cmds::printHelp(std::vector<helpCmd> helpList, HELP helpType)
 {
 	if (helpType == SHORT_HELP) {

@@ -35,28 +35,17 @@ enum HELP
 	FULL_HELP,
 };
 
+// The constructors are defined in cmds.cpp: inlined into std::vector::emplace_back, GCC 13
+// misjudges the size of the element being built and fails the build with -Warray-bounds or
+// -Wstringop-overflow.
 struct helpCmd
 {
-	char line[MAX_PATH];
-	int char_gap;
+	char line[MAX_PATH]{};
+	int char_gap{};
 
-	// Default constructor
-	helpCmd() { memset(line, 0, sizeof(line)); }
-
-	helpCmd(GAP gap, const char *fmt, ...)
-	{
-		char_gap = (int)gap;
-		va_list args;
-		va_start(args, fmt);
-		vsnprintf(line, sizeof(line), fmt, args);
-		va_end(args);
-	}
-
-	helpCmd(GAP gap)
-	{
-		char_gap = (int)gap;
-		memset(line, 0, MAX_PATH);
-	}
+	helpCmd();
+	helpCmd(GAP gap, const char *fmt, ...);
+	helpCmd(GAP gap);
 };
 
 struct arg_struct
@@ -82,9 +71,9 @@ protected:
 	std::string name;
 
 public:
-	cmds(){};
+	cmds() {};
 	const std::string &getName() { return name; }
-	virtual ~cmds(){};
+	virtual ~cmds() {};
 	void printHelp(std::vector<helpCmd> helpList, HELP helpType = FULL_HELP);
 	virtual void help(HELP helpType = FULL_HELP) = 0;
 	virtual int run(arg_struct *args) = 0;

@@ -465,9 +465,10 @@ void driver::adoptSurvivabilityDevices(const std::vector<zes_device_handle_t> &s
 		return;
 	}
 	svZesDevs.zesDriver = zesDrivers[0];
-	svZesDevs.survDevCount = static_cast<uint32_t>(survivors.size());
-	svZesDevs.survDevices = new device[survivors.size()];
-	for (uint32_t k = 0; k < svZesDevs.survDevCount; k++) {
+	const std::size_t count = survivors.size();
+	svZesDevs.survDevCount = static_cast<uint32_t>(count);
+	svZesDevs.survDevices = new device[count];
+	for (std::size_t k = 0; k < count; k++) {
 		svZesDevs.survDevices[k].smDevInit(zesDrivers[0], survivors[k]);
 		svZesDevs.survDevices[k].setSurvivabilityMode(true);
 	}
