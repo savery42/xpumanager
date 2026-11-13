@@ -1,0 +1,113 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: MIT
+#
+# Builds xpu-smi on GitHub-hosted runners: Linux with the unit tests, Windows compile only
+# (the unit tests are Linux-only). Neither needs a GPU.
+
+name: xpu-smi build
+
+on:
+  push:
+    branches:
+      - top
+      - ci-top
+  pull_request:
+    branches:
+      - top
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The image holds the compiler and every Conan dependency; its layers are cached, so
+      # the dependencies are rebuilt only when conanfile.py or recipes/ change.
+      - name: Build the build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: .github/docker/Dockerfile.coverage
+          tags: xpum-build:ci
+          load: true
+          cache-from: type=gha,scope=xpum-build
+          cache-to: type=gha,scope=xpum-build,mode=max
+
+      - name: Build and run the unit tests
+        run: |
+          docker run --rm -i \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace \
+            --env CONAN_HOME=/conan \
+            xpum-build:ci bash << 'SCRIPT'
+          set -e
+          conan install . --output-folder=/tmp/conan --build=missing \
+            -s build_type=Release \
+            -o '&:use_system_hwloc=True' \
+            -o '&:use_system_curl=True' \
+            -o '&:with_tests=True'
+          meson setup /tmp/build \
+            --buildtype=release \
+            -Db_lto=false \
+            -Dwith_tests=true \
+            --native-file /tmp/conan/conan_meson_native.ini
+          # -k0: report every file that fails to compile, not only the first.
+          meson compile -C /tmp/build --ninja-args=-k0
+          meson test -C /tmp/build --print-errorlogs
+          SCRIPT
+
+  windows:
+    name: Windows build
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          pip install "conan>=2.0" "meson>=1.10" ninja
+          choco install pkgconfiglite --no-progress -y
+
+      - name: Cache Conan packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.conan2/p
+          key: conan-windows-${{ hashFiles('conanfile.py', 'recipes/**') }}
+          restore-keys: conan-windows-
+
+      - name: Set up the Conan profile and local recipes
+        run: |
+          conan profile detect --force
+          $profile = conan profile path default
+          (Get-Content $profile) -replace '^compiler.cppstd=.*', 'compiler.cppstd=20' | Set-Content $profile
+          Get-Content $profile
+          conan create recipes/level-zero --build=missing
+          conan create recipes/metee --build=missing
+          conan create recipes/igsc --build=missing
+
+      - name: Install dependencies
+        run: conan install . -s arch=x86_64 --output-folder=.conan --build=missing -s build_type=Release
+
+      - name: Configure and build
+        run: |
+          meson setup builddir --vsenv --native-file .conan/conan_meson_native.ini
+          meson compile -C builddir --ninja-args=-k0

@@ -21,6 +21,7 @@ RUN apt-get update \
   libpciaccess-dev \
   libcurl4-openssl-dev \
   libudev-dev \
+  libfmt-dev \
   gcovr \
   lcov \
   git \
