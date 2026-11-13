@@ -11,6 +11,7 @@
 
 #include "cmd_ps.h"
 #include "metrics_registry.h"
+#include "process_runtime.h"
 #include "utility/compat/format.h"
 #include "utility/units/units.h"
 
@@ -258,6 +259,7 @@ inline constexpr int COL_TYPE        = 7;
 inline constexpr int COL_GPU_MEM     = 7;
 inline constexpr int COL_PERCENT     = 6;
 inline constexpr int COL_HOST_MEM    = 7;
+inline constexpr int COL_RUNTIME     = 12;
 inline constexpr int MIN_NAME_WIDTH  = 8;
 // clang-format on
 
@@ -266,12 +268,15 @@ inline constexpr int PROC_FIXED_WIDTH =
 	PROC_INDENT + COL_PID + COL_GPU + COL_TYPE + COL_GPU_MEM + 3 * COL_PERCENT + COL_HOST_MEM + 8 * PROC_GAP;
 /// A percentage column the table can drop: Rnd%, Cpy% or GMem%.
 inline constexpr int OPTIONAL_COL_WIDTH = COL_PERCENT + PROC_GAP;
+/// The Runtime column, which the table can drop too.
+inline constexpr int RUNTIME_COL_WIDTH = COL_RUNTIME + PROC_GAP;
 
 struct ProcTableLayout
 {
 	bool showRender = true;
 	bool showCopy = true;
 	bool showGpuMemPercent = true;
+	bool showRuntime = true;
 	int nameWidth = MIN_NAME_WIDTH;
 
 	bool operator==(const ProcTableLayout &) const = default;
@@ -281,21 +286,32 @@ struct ProcTableLayout
  * @brief Which process columns fit in @p cols.
  *
  * Optional columns go in this order until the name has MIN_NAME_WIDTH: Rnd% and Cpy%, which
- * are usually idle, then GMem%, which GPUMiB already approximates. On a terminal too narrow
- * even then, the name keeps MIN_NAME_WIDTH and the row overflows.
+ * are usually idle, then GMem%, which GPUMiB already approximates, then Runtime, which the
+ * detail view still shows. On a terminal too narrow even then, the name keeps MIN_NAME_WIDTH
+ * and the row overflows.
  */
 [[nodiscard]] inline ProcTableLayout procTableLayout(int cols) noexcept
 {
+	struct Optional
+	{
+		bool ProcTableLayout::*shown;
+		int width;
+	};
 	ProcTableLayout table;
-	const std::array<bool ProcTableLayout::*, 3> dropOrder{&ProcTableLayout::showRender, &ProcTableLayout::showCopy,
-														   &ProcTableLayout::showGpuMemPercent};
-	int room = cols - PROC_FIXED_WIDTH - static_cast<int>(dropOrder.size()) * OPTIONAL_COL_WIDTH;
-	for (const auto column : dropOrder) {
+	const std::array<Optional, 4> dropOrder{{{&ProcTableLayout::showRender, OPTIONAL_COL_WIDTH},
+											 {&ProcTableLayout::showCopy, OPTIONAL_COL_WIDTH},
+											 {&ProcTableLayout::showGpuMemPercent, OPTIONAL_COL_WIDTH},
+											 {&ProcTableLayout::showRuntime, RUNTIME_COL_WIDTH}}};
+	int room = cols - PROC_FIXED_WIDTH;
+	for (const auto &column : dropOrder) {
+		room -= column.width;
+	}
+	for (const auto &column : dropOrder) {
 		if (room >= MIN_NAME_WIDTH) {
 			break;
 		}
-		table.*column = false;
-		room += OPTIONAL_COL_WIDTH;
+		table.*column.shown = false;
+		room += column.width;
 	}
 	table.nameWidth = std::max(MIN_NAME_WIDTH, room);
 	return table;
@@ -552,6 +568,59 @@ inline constexpr std::array<std::string_view, 22> TOP_FIELDS{
 		return xpum::compat::format("{:.0f}", v);
 	}
 	return xpum::compat::format("{:.1f} {}", v, unit);
+}
+
+/**
+ * @brief A short description of a process's GPU software: "GGML/VK", "Torch/SYCL+L0", "GL+VK".
+ *
+ * Frameworks come first and are followed by a '/' and the APIs. The APIs are grouped by the
+ * engine they drive (compute: SYCL, L0, OCL; graphics: VK, GL; media: VPL, VA) and the groups
+ * matching @p engines go first, so the API a process is using is the one a narrow column keeps.
+ *
+ * @param[in] rt       readProcessRuntime()'s result.
+ * @param[in] engines  psInfo::engines, the ZES_ENGINE_TYPE_FLAG_* bits the process was seen using.
+ *
+ * @retval "-"   Nothing recognised.
+ * @retval text  Otherwise.
+ */
+[[nodiscard]] inline std::string runtimeLabel(const runtime::ProcessRuntime &rt, uint64_t engines)
+{
+	const auto uses = [engines](zes_engine_type_flag_t f) { return (engines & static_cast<uint64_t>(f)) != 0ULL; };
+	struct Group
+	{
+		std::array<runtime::Api, 3> apis;
+		std::size_t count;
+		bool used;
+	};
+	std::array<Group, 3> groups{{
+		{{runtime::Api::Sycl, runtime::Api::LevelZero, runtime::Api::OpenCl}, 3, uses(ZES_ENGINE_TYPE_FLAG_COMPUTE)},
+		{{runtime::Api::Vulkan, runtime::Api::OpenGl, runtime::Api::Count},
+		 2,
+		 uses(ZES_ENGINE_TYPE_FLAG_RENDER) || uses(ZES_ENGINE_TYPE_FLAG_3D)},
+		{{runtime::Api::Vpl, runtime::Api::VaApi, runtime::Api::Count}, 2, uses(ZES_ENGINE_TYPE_FLAG_MEDIA)},
+	}};
+	std::ranges::stable_partition(groups, [](const Group &g) { return g.used; });
+
+	std::string apis;
+	for (const auto &g : groups) {
+		for (std::size_t i = 0; i < g.count; ++i) {
+			if (rt.has(g.apis[i])) {
+				apis += (apis.empty() ? "" : "+");
+				apis += runtime::label(g.apis[i]);
+			}
+		}
+	}
+	std::string frameworks;
+	for (std::size_t i = 0; i < static_cast<std::size_t>(runtime::Framework::Count); ++i) {
+		if (rt.has(static_cast<runtime::Framework>(i))) {
+			frameworks += (frameworks.empty() ? "" : "+");
+			frameworks += runtime::label(static_cast<runtime::Framework>(i));
+		}
+	}
+	if (frameworks.empty()) {
+		return apis.empty() ? std::string{"-"} : apis;
+	}
+	return apis.empty() ? frameworks : frameworks + "/" + apis;
 }
 
 } // namespace top

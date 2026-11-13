@@ -25,6 +25,7 @@ if is_windows
     'win/proc_fdinfo.cpp',
     'win/process_control.cpp',
     'win/process_platform.cpp',
+    'win/process_runtime.cpp',
     'win/process_stats.cpp',
     'win/terminal.cpp',
     'win/thread.cpp',
@@ -58,6 +59,7 @@ elif is_linux
     'lin/topology.cpp',
     'lin/pch_prod_state.cpp',
     'lin/process_control.cpp',
+    'lin/process_runtime.cpp',
     'lin/process_stats.cpp',
     'lin/vram_debugfs.cpp',
   )

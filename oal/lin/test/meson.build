@@ -222,6 +222,18 @@ if get_option('with_tests')
 
   test('process_stats_test', process_stats_test)
 
+  # GPU libraries and model files from fixture maps files. Compiles process_runtime.cpp directly so the test needs no OAL link.
+  process_runtime_test = executable(
+    'process_runtime_test',
+    ['process_runtime_test.cpp', '../process_runtime.cpp'],
+    include_directories: [global_inc, include_directories('../..')],
+    dependencies: [doctest_dep],
+    link_args: is_linux ? ['-pie'] : [],
+    build_by_default: true,
+  )
+
+  test('process_runtime_test', process_runtime_test)
+
   message('Unit tests enabled for OAL diagnostics')
 else
   message('Skipping OAL diagnostic tests (pass -Dwith_tests=true to enable)')

@@ -14,6 +14,7 @@
 #include "metrics_registry.h"
 #include "proc_fdinfo.h"
 #include "process_control.h"
+#include "process_runtime.h"
 #include "process_stats.h"
 #include "requirements.h"
 #include "table_builder.h"
@@ -56,6 +57,9 @@ constexpr int CP_DIM = 8;
 
 constexpr auto KEY_POLL = std::chrono::milliseconds{50};
 constexpr unsigned char CTRL_C = 0x03;
+// A process rarely loads a GPU library after it starts, and reading what it has loaded is not
+// free, so it is read again only this often.
+constexpr auto RUNTIME_REFRESH = std::chrono::seconds{5};
 
 std::atomic<bool> g_quit{false}; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 bool g_colorsEnabled = false;	 // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
@@ -94,6 +98,13 @@ struct TopState
 	// Host CPU and memory per pid, shared by every GPU the process appears on.
 	std::unordered_map<uint32_t, HostReading> hostReadings;
 	HostUsageMap host;
+	// What each listed pid has loaded; nullopt when that may not be read (another user's).
+	struct CachedRuntime
+	{
+		std::optional<runtime::ProcessRuntime> runtime;
+		std::chrono::steady_clock::time_point readAt;
+	};
+	std::unordered_map<uint32_t, CachedRuntime> runtimes;
 
 	int selectedRow = 0;
 	int scrollOffset = 0;
@@ -500,6 +511,16 @@ int renderDevicePanel(int startRow, devInfo &dev, const metrics::MetricCache &ca
 						 idx < state.gpuMemTotalMiB.size() ? state.gpuMemTotalMiB[idx] : std::nullopt);
 }
 
+/// A process's Runtime cell; "N/A" when what it has loaded could not be read.
+[[nodiscard]] std::string runtimeText(const TopState &state, const psInfo &proc)
+{
+	const auto it = state.runtimes.find(proc.processId);
+	if (it == state.runtimes.end() || !it->second.runtime) {
+		return "N/A";
+	}
+	return runtimeLabel(*it->second.runtime, proc.engines);
+}
+
 void renderProcessTable(const TopState &state, SortBy sortBy, int startRow, int procH, int cols)
 {
 	auto merged = buildMergedList(state.processLists, state.host);
@@ -512,11 +533,20 @@ void renderProcessTable(const TopState &state, SortBy sortBy, int startRow, int 
 	const std::string gap(PROC_GAP, ' ');
 
 	// One function lays out the header and every row, so the columns cannot drift apart.
-	const auto line = [&](std::string_view pid, std::string_view gpu, std::string_view type, std::string_view gpuMem,
-						  std::string_view gpuMemPct, std::string_view cmp, std::string_view rnd, std::string_view med,
-						  std::string_view cpy, std::string_view cpu, std::string_view hostMem, std::string_view name) {
-		std::string out = xpum::compat::format("{:{}}{:>{}}{}{:>{}}{}{:<{}}{}{:>{}}{}", "", PROC_INDENT, pid, COL_PID,
-											   gap, gpu, COL_GPU, gap, type, COL_TYPE, gap, gpuMem, COL_GPU_MEM, gap);
+	const auto line = [&](std::string_view pid, std::string_view gpu, std::string_view type, std::string_view rt,
+						  std::string_view gpuMem, std::string_view gpuMemPct, std::string_view cmp,
+						  std::string_view rnd, std::string_view med, std::string_view cpy, std::string_view cpu,
+						  std::string_view hostMem, std::string_view name) {
+		std::string out = xpum::compat::format("{:{}}{:>{}}{}{:>{}}{}{:<{}}{}", "", PROC_INDENT, pid, COL_PID, gap, gpu,
+											   COL_GPU, gap, type, COL_TYPE, gap);
+		if (table.showRuntime) {
+			std::string cell{rt.substr(0, static_cast<std::size_t>(COL_RUNTIME))};
+			if (cell.size() < rt.size()) {
+				cell.back() = '~';
+			}
+			out += xpum::compat::format("{:<{}}{}", cell, COL_RUNTIME, gap);
+		}
+		out += xpum::compat::format("{:>{}}{}", gpuMem, COL_GPU_MEM, gap);
 		if (table.showGpuMemPercent) {
 			out += xpum::compat::format("{:>{}}{}", gpuMemPct, COL_PERCENT, gap);
 		}
@@ -541,8 +571,8 @@ void renderProcessTable(const TopState &state, SortBy sortBy, int startRow, int 
 	term::gotoPos(startRow, 0);
 	term::attrBold();
 	term::attrUL();
-	std::fputs(line("PID", "GPU", "Type", hdr("GPUMiB", SortBy::Memory), "GMem%", hdr("Cmp%", SortBy::Compute), "Rnd%",
-					"Med%", "Cpy%", hdr("CPU%", SortBy::Cpu), "HostMiB", "Name")
+	std::fputs(line("PID", "GPU", "Type", "Runtime", hdr("GPUMiB", SortBy::Memory), "GMem%",
+					hdr("Cmp%", SortBy::Compute), "Rnd%", "Med%", "Cpy%", hdr("CPU%", SortBy::Cpu), "HostMiB", "Name")
 				   .c_str(),
 			   stdout);
 	term::attrReset();
@@ -573,9 +603,9 @@ void renderProcessTable(const TopState &state, SortBy sortBy, int startRow, int 
 		const std::string hostMem =
 			mp.host.resident ? std::to_string(mp.host.resident->mebibytes()) : std::string{"N/A"};
 		std::fputs(line(std::to_string(p->processId), std::to_string(mp.gpuIdx), engineType(p->engines),
-						std::to_string(p->memSize / 1024), pct(gpuMemPercentOf(state, mp)), pct(p->util.compute),
-						pct(p->util.render), pct(p->util.media), pct(p->util.copy), pct(mp.host.cpu), hostMem,
-						p->commandName)
+						runtimeText(state, *p), std::to_string(p->memSize / 1024), pct(gpuMemPercentOf(state, mp)),
+						pct(p->util.compute), pct(p->util.render), pct(p->util.media), pct(p->util.copy),
+						pct(mp.host.cpu), hostMem, p->commandName)
 					   .c_str(),
 				   stdout);
 		term::attrReset();
@@ -654,6 +684,73 @@ std::optional<StopSignal> confirmKill(const psInfo &proc, const TerminalSize &sc
 		return StopSignal::Kill;
 	}
 	return std::nullopt;
+}
+
+/// @p text cut to @p width columns, keeping its end (a path's file name) and marking the cut with '~'.
+[[nodiscard]] std::string keepEnd(std::string_view text, std::size_t width)
+{
+	if (text.size() <= width || width == 0) {
+		return std::string{text};
+	}
+	return "~" + std::string{text.substr(text.size() - width + 1)};
+}
+
+/// Shows what @p proc has loaded and mapped until a key is pressed.
+void showDetail(const TopState &state, const psInfo &proc, int gpuIdx)
+{
+	const int rows = static_cast<int>(state.screen.rows);
+	const int cols = static_cast<int>(state.screen.columns);
+	const auto cached = state.runtimes.find(proc.processId);
+	const runtime::ProcessRuntime *rt =
+		cached != state.runtimes.end() && cached->second.runtime ? &*cached->second.runtime : nullptr;
+
+	std::vector<std::string> lines;
+	lines.push_back(xpum::compat::format("PID {}  {}  (GPU {}, {})", proc.processId, proc.commandName, gpuIdx,
+										 engineType(proc.engines)));
+	lines.emplace_back();
+	if (rt == nullptr) {
+		lines.emplace_back("What it has loaded cannot be read: that needs its user or root.");
+	} else {
+		lines.push_back("Runtime: " + runtimeLabel(*rt, proc.engines));
+		lines.emplace_back("GPU libraries:");
+		for (const auto &lib : rt->libraries) {
+			lines.push_back("  " + lib);
+		}
+		if (rt->libraries.empty()) {
+			lines.emplace_back("  none recognised");
+		}
+		lines.emplace_back("Model files mapped:");
+		for (const auto &model : rt->models) {
+			lines.push_back("  " + model);
+		}
+		if (rt->models.empty()) {
+			lines.emplace_back("  none");
+		}
+	}
+
+	// The box: a blank border column each side, centred, as tall as fits with a closing line.
+	const int width = std::max(20, cols - 8);
+	const int maxBody = std::max(1, rows - 6);
+	if (static_cast<int>(lines.size()) > maxBody) {
+		const auto hidden = lines.size() - static_cast<std::size_t>(maxBody - 1);
+		lines.resize(static_cast<std::size_t>(maxBody - 1));
+		lines.push_back(xpum::compat::format("  ... {} more", hidden));
+	}
+	lines.emplace_back();
+	lines.emplace_back("Press any key to close");
+
+	const int top = std::max(1, (rows - static_cast<int>(lines.size())) / 2);
+	const int left = std::max(0, (cols - width) / 2);
+	const auto inner = static_cast<std::size_t>(width - 2);
+	for (std::size_t i = 0; i < lines.size(); ++i) {
+		term::gotoPos(top + static_cast<int>(i), left);
+		term::attrReverse();
+		const std::string text = keepEnd(lines[i], inner);
+		std::fprintf(stdout, " %-*s ", static_cast<int>(inner), text.c_str());
+		term::attrReset();
+	}
+	term::flushOut();
+	(void)keyboard::readKey(std::nullopt);
 }
 
 void recordKill(TopState &state, uint32_t pid, StopSignal sig, SignalResult result)
@@ -741,6 +838,28 @@ void refreshHostUsage(TopState &state)
 	state.host = std::move(host);
 }
 
+/// Reads what each listed pid has loaded, when it is new or was read RUNTIME_REFRESH ago; forgets
+/// pids no longer listed.
+void refreshRuntimes(TopState &state)
+{
+	const auto now = std::chrono::steady_clock::now();
+	std::unordered_map<uint32_t, TopState::CachedRuntime> runtimes;
+	for (const auto &list : state.processLists) {
+		for (const auto &p : list) {
+			if (runtimes.contains(p.processId)) {
+				continue;
+			}
+			if (const auto it = state.runtimes.find(p.processId);
+				it != state.runtimes.end() && now - it->second.readAt < RUNTIME_REFRESH) {
+				runtimes.insert(*it);
+				continue;
+			}
+			runtimes[p.processId] = {.runtime = readProcessRuntime(p.processId), .readAt = now};
+		}
+	}
+	state.runtimes = std::move(runtimes);
+}
+
 /// Every device's processes over the window from @p before to @p after.
 void refreshAllProcesses(TopState &state, std::span<devInfo> devices, const fdinfo::Walk &before,
 						 const fdinfo::Walk &after, const std::unordered_set<std::string> &gpuPciAddrs)
@@ -753,6 +872,7 @@ void refreshAllProcesses(TopState &state, std::span<devInfo> devices, const fdin
 						 fdinfo::snapshotsFor(after.devices, pci), facts, state.smoothed[i]);
 	}
 	refreshHostUsage(state);
+	refreshRuntimes(state);
 }
 
 // Plain frames, one after another: the in-place redraw of TableBuilder's streaming mode would put
@@ -774,6 +894,7 @@ void renderBatch(const TopState &state, std::span<devInfo> devices, SortBy sortB
 	procTable.addColumn("PID", Align::Right)
 		.addColumn("GPU", Align::Right)
 		.addColumn("Name", Align::Left)
+		.addColumn("Runtime", Align::Left)
 		.addColumn("GPUMiB", Align::Right)
 		.addColumn("GMem%", Align::Right)
 		.addColumn("Cmp%", Align::Right)
@@ -799,8 +920,8 @@ void renderBatch(const TopState &state, std::span<devInfo> devices, SortBy sortB
 	for (const auto &mp : merged) {
 		const psInfo *p = mp.proc;
 		procTable.addRow(std::to_string(p->processId), std::to_string(mp.gpuIdx), p->commandName,
-						 std::to_string(p->memSize / 1024), fmtU(gpuMemPercentOf(state, mp)), fmtU(p->util.compute),
-						 fmtU(p->util.media), fmtU(p->util.copy), fmtU(mp.host.cpu),
+						 runtimeText(state, *p), std::to_string(p->memSize / 1024), fmtU(gpuMemPercentOf(state, mp)),
+						 fmtU(p->util.compute), fmtU(p->util.media), fmtU(p->util.copy), fmtU(mp.host.cpu),
 						 mp.host.resident ? std::to_string(mp.host.resident->mebibytes()) : std::string{"N/A"});
 	}
 
@@ -832,8 +953,8 @@ void renderFrame(TopState &state, std::span<devInfo> devices, SortBy sortBy, boo
 	if (g_colorsEnabled) {
 		term::attrDim();
 	}
-	std::fprintf(stdout, "  q:quit  j/k:scroll  K:kill  g/G:top/bottom  %d/%d", total > 0 ? state.selectedRow + 1 : 0,
-				 total);
+	std::fprintf(stdout, "  q:quit  j/k:scroll  i:details  K:kill  g/G:top/bottom  %d/%d",
+				 total > 0 ? state.selectedRow + 1 : 0, total);
 	if (g_colorsEnabled) {
 		term::attrReset();
 	}
@@ -910,6 +1031,15 @@ bool handleInput(int ch, TopState &state, SortBy sortBy)
 		state.scrollOffset = maxScroll;
 		break;
 
+	case 'i':
+	case '\r':
+	case '\n':
+		if (state.selectedRow < total) {
+			const auto &selected = merged[static_cast<std::size_t>(state.selectedRow)];
+			showDetail(state, *selected.proc, selected.gpuIdx);
+		}
+		break;
+
 	case 'K':
 		if (state.selectedRow < total) {
 			const psInfo *target = merged[static_cast<std::size_t>(state.selectedRow)].proc;
@@ -951,6 +1081,11 @@ void cmdTop::help(HELP helpType)
 	helpList.push_back(
 		helpCmd(HEADING, "--no-color             Disable ANSI colour (useful for TERM=dumb or logging)"));
 	helpList.push_back(helpCmd(HEADING, "--batch                Plain table output without the TUI (for scripts)"));
+	helpList.push_back(helpCmd(BLANK));
+	helpList.push_back(helpCmd(TITLE, "Runtime is what a process has loaded to use the GPU: frameworks, then a '/',"));
+	helpList.push_back(helpCmd(TITLE, "then APIs, those for the engines it uses first (e.g. GGML/VK, Torch/SYCL+L0)."));
+	helpList.push_back(helpCmd(TITLE, "N/A means reading that needs its user or root. Press i or Enter on a process"));
+	helpList.push_back(helpCmd(TITLE, "for the libraries and model files behind it."));
 	printHelp(helpList, helpType);
 }
 

@@ -21,6 +21,7 @@
 #include <string>
 std::string progName = "test";
 
+#include "process_runtime.h"
 #include "top_model.h"
 #include "utility/bitmask_enum.h"
 #include <chrono>
@@ -163,28 +164,36 @@ TEST_CASE("cpuPercent counts one busy core as 100% and rejects readings it canno
 	CHECK_FALSE(cpuPercent(before, {.cpuTime = 1s, .at = t0 + 1s}).has_value());
 }
 
-TEST_CASE("procTableLayout drops render, then copy, then GMem% before the name gets too narrow")
+TEST_CASE("procTableLayout drops render, then copy, then GMem%, then Runtime before the name gets too narrow")
 {
-	const ProcTableLayout wide = procTableLayout(120);
+	const ProcTableLayout wide = procTableLayout(140);
 	CHECK(wide == ProcTableLayout{.showRender = true,
 								  .showCopy = true,
 								  .showGpuMemPercent = true,
-								  .nameWidth = 120 - PROC_FIXED_WIDTH - 3 * OPTIONAL_COL_WIDTH});
+								  .showRuntime = true,
+								  .nameWidth = 140 - PROC_FIXED_WIDTH - 3 * OPTIONAL_COL_WIDTH - RUNTIME_COL_WIDTH});
 
 	// Each threshold is the narrowest width that still keeps the name at MIN_NAME_WIDTH.
-	const int onlyGpuMem = PROC_FIXED_WIDTH + OPTIONAL_COL_WIDTH + MIN_NAME_WIDTH;
-	CHECK(procTableLayout(onlyGpuMem) ==
-		  ProcTableLayout{
-			  .showRender = false, .showCopy = false, .showGpuMemPercent = true, .nameWidth = MIN_NAME_WIDTH});
-	CHECK_FALSE(procTableLayout(onlyGpuMem - 1).showGpuMemPercent);
-	CHECK(procTableLayout(onlyGpuMem + OPTIONAL_COL_WIDTH).showCopy);
-	CHECK_FALSE(procTableLayout(onlyGpuMem + OPTIONAL_COL_WIDTH).showRender);
-	CHECK(procTableLayout(onlyGpuMem + 2 * OPTIONAL_COL_WIDTH).showRender);
+	const int onlyRuntime = PROC_FIXED_WIDTH + RUNTIME_COL_WIDTH + MIN_NAME_WIDTH;
+	CHECK(procTableLayout(onlyRuntime) == ProcTableLayout{.showRender = false,
+														  .showCopy = false,
+														  .showGpuMemPercent = false,
+														  .showRuntime = true,
+														  .nameWidth = MIN_NAME_WIDTH});
+	CHECK_FALSE(procTableLayout(onlyRuntime - 1).showRuntime);
+	const int withGpuMem = onlyRuntime + OPTIONAL_COL_WIDTH;
+	CHECK(procTableLayout(withGpuMem).showGpuMemPercent);
+	CHECK_FALSE(procTableLayout(withGpuMem - 1).showGpuMemPercent);
+	CHECK(procTableLayout(withGpuMem + OPTIONAL_COL_WIDTH).showCopy);
+	CHECK_FALSE(procTableLayout(withGpuMem + OPTIONAL_COL_WIDTH).showRender);
+	CHECK(procTableLayout(withGpuMem + 2 * OPTIONAL_COL_WIDTH).showRender);
 
 	const ProcTableLayout standard = procTableLayout(80);
-	CHECK(standard ==
-		  ProcTableLayout{
-			  .showRender = false, .showCopy = false, .showGpuMemPercent = false, .nameWidth = 80 - PROC_FIXED_WIDTH});
+	CHECK(standard == ProcTableLayout{.showRender = false,
+									  .showCopy = false,
+									  .showGpuMemPercent = false,
+									  .showRuntime = false,
+									  .nameWidth = 80 - PROC_FIXED_WIDTH});
 
 	CHECK(procTableLayout(40).nameWidth == MIN_NAME_WIDTH);
 }
@@ -290,4 +299,27 @@ TEST_CASE("topInputs drops EU unless it is held")
 	CHECK(hasAny(without, MetricInput::FDINFO));
 
 	CHECK(hasAny(topInputs(true), MetricInput::EU));
+}
+
+TEST_CASE("runtimeLabel puts the APIs for the engines in use first")
+{
+	runtime::ProcessRuntime player;
+	player.apis =
+		(1U << static_cast<unsigned>(runtime::Api::Vulkan)) | (1U << static_cast<unsigned>(runtime::Api::VaApi));
+	player.frameworks = 1U << static_cast<unsigned>(runtime::Framework::FFmpeg);
+	CHECK(runtimeLabel(player, 0) == "FFmpeg/VK+VA");
+	CHECK(runtimeLabel(player, ZES_ENGINE_TYPE_FLAG_MEDIA) == "FFmpeg/VA+VK");
+
+	runtime::ProcessRuntime torch;
+	torch.apis = (1U << static_cast<unsigned>(runtime::Api::LevelZero)) |
+				 (1U << static_cast<unsigned>(runtime::Api::Sycl)) |
+				 (1U << static_cast<unsigned>(runtime::Api::OpenGl));
+	torch.frameworks = 1U << static_cast<unsigned>(runtime::Framework::PyTorch);
+	CHECK(runtimeLabel(torch, ZES_ENGINE_TYPE_FLAG_RENDER) == "Torch/GL+SYCL+L0");
+	CHECK(runtimeLabel(torch, ZES_ENGINE_TYPE_FLAG_COMPUTE) == "Torch/SYCL+L0+GL");
+
+	CHECK(runtimeLabel({}, ZES_ENGINE_TYPE_FLAG_COMPUTE) == "-");
+	runtime::ProcessRuntime onlyFramework;
+	onlyFramework.frameworks = 1U << static_cast<unsigned>(runtime::Framework::OpenVino);
+	CHECK(runtimeLabel(onlyFramework, 0) == "OV");
 }
